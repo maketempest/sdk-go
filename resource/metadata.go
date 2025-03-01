@@ -1,6 +1,8 @@
 package resource
 
 type Metadata struct {
+	// TaskID is the ID of the Task that is executing the operation.
+	TaskID string
 	// ProjectID is the ID of the Tempest Project. This guaranteed to be unique.
 	ProjectID string
 	// ProjectName is the user defined name of the Tempest Project.

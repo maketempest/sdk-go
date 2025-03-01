@@ -1,7 +1,9 @@
 package resource
 
 import (
+	"encoding/json"
 	"errors"
+	"maps"
 
 	"github.com/tempestdx/sdk-go/jsonschema"
 )
@@ -42,9 +44,15 @@ func (r *ResourceDefinition) DisplayName() string {
 	return r.displayName
 }
 
+func (r *ResourceDefinition) Operations() map[string]*operation {
+	// returns a copy of the operations
+	operationsCopy := make(map[string]*operation, len(r.operations))
+	maps.Copy(operationsCopy, r.operations)
+	return operationsCopy
+}
+
 // Config represents the configuration for creating a new resource
-type ResourceDefinitonConfig struct {
-	Name           string
+type DefinitionConfig struct {
 	DisplayName    string
 	UniqueID       string
 	LifecycleStage LifecycleStage
@@ -52,7 +60,7 @@ type ResourceDefinitonConfig struct {
 }
 
 // New creates a new V2 resource
-func New(config ResourceDefinitonConfig, opts ...resourceDefinitionOption) (*ResourceDefinition, error) {
+func NewDefinition(config DefinitionConfig, opts ...resourceDefinitionOption) (*ResourceDefinition, error) {
 	r := &ResourceDefinition{
 		displayName:    config.DisplayName,
 		uniqueID:       config.UniqueID,
@@ -98,6 +106,13 @@ func New(config ResourceDefinitonConfig, opts ...resourceDefinitionOption) (*Res
 		opt(r)
 	}
 
+	// validate categories
+	for _, category := range r.categories {
+		if !isValidCategory(category) {
+			return nil, errors.New("invalid category")
+		}
+	}
+
 	return r, nil
 }
 
@@ -122,8 +137,77 @@ func WithHealthCheck(fn HealthCheckFunc) resourceDefinitionOption {
 	}
 }
 
+func WithCategories(categories ...Category) resourceDefinitionOption {
+	return func(r *ResourceDefinition) {
+		r.categories = categories
+	}
+}
+
 func (r *ResourceDefinition) RegisterOperation(name string, fn OperationFunc, opts ...operationOption) *ResourceDefinition {
 	op := newOperation(name, fn, opts...)
 	r.operations[name] = op
 	return r
+}
+
+// JSON returns the JSON representation of the ResourceDefinition
+func (r *ResourceDefinition) JSON() ([]byte, error) {
+	data := map[string]any{
+		"displayName":    r.displayName,
+		"uniqueID":       r.uniqueID,
+		"lifecycleStage": r.lifecycleStage,
+	}
+
+	// Add categories if any
+	if len(r.categories) > 0 {
+		categories := make([]string, len(r.categories))
+		for i, category := range r.categories {
+			categories[i] = string(category)
+		}
+		data["categories"] = categories
+	}
+
+	// Add links if any
+	if len(r.links) > 0 {
+		data["links"] = r.links
+	}
+
+	// Add properties schema if any
+	if r.properties != nil {
+		propertiesSchema, err := r.properties.Raw.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		data["properties"] = json.RawMessage(propertiesSchema)
+	}
+
+	// Add instructions if any
+	if r.instructionsMarkdown != "" {
+		data["instructionsMarkdown"] = r.instructionsMarkdown
+	}
+
+	// Add health check flag if defined
+	if r.healthCheck != nil {
+		data["healthcheckEnabled"] = true
+	}
+
+	// Add operations if any
+	if len(r.operations) > 0 {
+		ops := make(map[string]json.RawMessage)
+		for name, op := range r.operations {
+			opJSON, err := op.JSON()
+			if err != nil {
+				return nil, err
+			}
+			ops[name] = opJSON
+		}
+		data["operations"] = ops
+	}
+
+	return json.Marshal(data)
+}
+
+// GetOperation returns the operation with the given name.
+func (r *ResourceDefinition) GetOperation(name string) (*operation, bool) {
+	op, ok := r.Operations()[name]
+	return op, ok
 }

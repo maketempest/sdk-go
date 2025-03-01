@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/tempestdx/sdk-go/jsonschema"
 )
@@ -50,15 +51,15 @@ type OperationResponse struct {
 	ResultProperties map[string]any
 }
 
-type OperationFunc func(ctx *context.Context, req *OperationRequest) (*OperationResponse, error)
+type OperationFunc func(ctx context.Context, req *OperationRequest) (*OperationResponse, error)
 
 type operation struct {
 	name string
 	args *jsonschema.Schema
 
-	pre  OperationFunc
-	fn   OperationFunc
-	post OperationFunc
+	Pre  OperationFunc
+	Fn   OperationFunc
+	Post OperationFunc
 
 	actionConfig *ActionConfig
 	canonicalOps []CanonicalOperation
@@ -68,8 +69,16 @@ func (o *operation) IsCanonical() bool {
 	return len(o.canonicalOps) > 0
 }
 
+func (o *operation) CanonicalOperations() []CanonicalOperation {
+	return o.canonicalOps
+}
+
 func (o *operation) IsAction() bool {
 	return o.actionConfig != nil
+}
+
+func (o *operation) Name() string {
+	return o.name
 }
 
 type ActionConfig struct {
@@ -81,7 +90,7 @@ type ActionConfig struct {
 func newOperation(name string, fn OperationFunc, opts ...operationOption) *operation {
 	op := &operation{
 		name:         name,
-		fn:           fn,
+		Fn:           fn,
 		canonicalOps: []CanonicalOperation{},
 	}
 
@@ -101,7 +110,7 @@ func newOperation(name string, fn OperationFunc, opts ...operationOption) *opera
 type operationOption func(*operation) error
 
 var operationOptions = struct {
-	EnableAction func(*ActionConfig) operationOption
+	EnableAction func(ActionConfig) operationOption
 	On           func(canonicals ...CanonicalOperation) operationOption
 	WithPre      func(OperationFunc) operationOption
 	WithPost     func(OperationFunc) operationOption
@@ -119,23 +128,23 @@ var (
 	OperationOptions = operationOptions
 )
 
-func enableAction(config *ActionConfig) operationOption {
+func enableAction(config ActionConfig) operationOption {
 	return func(op *operation) error {
-		op.actionConfig = config
+		op.actionConfig = &config
 		return nil
 	}
 }
 
 func withPre(fn OperationFunc) operationOption {
 	return func(op *operation) error {
-		op.pre = fn
+		op.Pre = fn
 		return nil
 	}
 }
 
 func withPost(fn OperationFunc) operationOption {
 	return func(op *operation) error {
-		op.post = fn
+		op.Post = fn
 		return nil
 	}
 }
@@ -152,4 +161,41 @@ func on(canonicals ...CanonicalOperation) operationOption {
 		op.canonicalOps = append(op.canonicalOps, canonicals...)
 		return nil
 	}
+}
+
+// JSON returns the JSON representation of the operation
+func (o *operation) JSON() ([]byte, error) {
+	data := map[string]any{
+		"name": o.name,
+	}
+
+	if o.args != nil {
+		jsonSchema, err := o.args.Raw.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		data["args"] = json.RawMessage(jsonSchema)
+	}
+
+	if o.actionConfig != nil {
+		data["actionConfig"] = map[string]interface{}{
+			"title":                o.actionConfig.Title,
+			"description":          o.actionConfig.Description,
+			"requiresConfirmation": o.actionConfig.RequiresConfirmation,
+		}
+	}
+
+	if len(o.canonicalOps) > 0 {
+		canonicalOps := make([]map[string]interface{}, len(o.canonicalOps))
+		for i, op := range o.canonicalOps {
+			canonicalOps[i] = map[string]interface{}{
+				"type":        op.Type,
+				"priority":    op.Priority,
+				"concurrency": op.Concurrency,
+			}
+		}
+		data["canonicalOperations"] = canonicalOps
+	}
+
+	return json.Marshal(data)
 }

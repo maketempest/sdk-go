@@ -214,6 +214,14 @@ func (a *agent) RegisterApp(app *app.App, supportedVersions []string) {
 func (a *agent) Start() error {
 	a.logger.Info("Starting agent", "workers", a.workers, "result_workers", a.resultWorkers)
 
+	// Log all registered routes
+	routes := make([]string, 0, len(a.routes))
+	for route := range a.routes {
+		routes = append(routes, route)
+	}
+	sort.Strings(routes)
+	a.logger.Info("Registered routes", "count", len(routes), "routes", routes)
+
 	// Start operation worker goroutines
 	for i := 0; i < a.workers; i++ {
 		a.workerWg.Add(1)
@@ -426,7 +434,7 @@ func (a *agent) registerOperationHandler(appName, version, resourceID, operation
 // registerCanonicalHandler creates and registers a handler for a canonical operation type
 func (a *agent) registerCanonicalHandler(appName, version, resourceID, canonicalTypeStr string) {
 	// Build the route path
-	routePath := fmt.Sprintf("/%s/%s/%s/%s", appName, version, resourceID, canonicalTypeStr)
+	routePath := fmt.Sprintf("/%s/%s/%s/canonical/%s", appName, version, resourceID, canonicalTypeStr)
 
 	a.logger.Debug("Registering canonical handler",
 		"path", routePath,
@@ -839,7 +847,7 @@ func (ac *appConfig) generateCanonicalRoutes() map[string]string {
 				// Convert CanonicalType to string name
 				typeStr := canonicalType.String()
 				if typeStr != "" {
-					routes[fmt.Sprintf("%s/%s/%s/%s", ac.Name, version, r.UniqueID(), typeStr)] =
+					routes[fmt.Sprintf("%s/%s/%s/canonical/%s", ac.Name, version, r.UniqueID(), typeStr)] =
 						fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
 				}
 			}

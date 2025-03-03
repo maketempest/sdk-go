@@ -211,3 +211,33 @@ func (r *ResourceDefinition) GetOperation(name string) (*operation, bool) {
 	op, ok := r.Operations()[name]
 	return op, ok
 }
+
+// PropertiesSchema returns the properties schema for the resource
+func (r *ResourceDefinition) PropertiesSchema() *jsonschema.Schema {
+	return r.properties
+}
+
+// LifecycleStage returns the lifecycle stage of the resource
+func (r *ResourceDefinition) LifecycleStage() LifecycleStage {
+	return r.lifecycleStage
+}
+
+// Categories returns the categories of the resource
+func (r *ResourceDefinition) Categories() []Category {
+	return r.categories
+}
+
+// Links returns the links associated with the resource
+func (r *ResourceDefinition) Links() []Link {
+	return r.links
+}
+
+// InstructionsMarkdown returns the instructions for the resource
+func (r *ResourceDefinition) InstructionsMarkdown() string {
+	return r.instructionsMarkdown
+}
+
+// HasHealthCheck returns true if the resource has a health check
+func (r *ResourceDefinition) HasHealthCheck() bool {
+	return r.healthCheck != nil
+}

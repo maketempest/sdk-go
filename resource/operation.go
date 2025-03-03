@@ -81,6 +81,14 @@ func (o *operation) Name() string {
 	return o.name
 }
 
+func (o *operation) Args() *jsonschema.Schema {
+	return o.args
+}
+
+func (o *operation) ActionConfig() *ActionConfig {
+	return o.actionConfig
+}
+
 type ActionConfig struct {
 	Title                string
 	Description          string

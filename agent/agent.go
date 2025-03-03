@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tempestdx/sdk-go/app"
@@ -60,6 +61,47 @@ type OperationResult struct {
 	EndTime   time.Time              `json:"end_time"`
 }
 
+// OperationDescription represents an operation in the describe API response
+type OperationDescription struct {
+	Name             string                   `json:"name"`
+	Args             json.RawMessage          `json:"args,omitempty"`
+	ActionConfig     map[string]interface{}   `json:"action_config,omitempty"`
+	CanonicalBinding []map[string]interface{} `json:"canonical_binding,omitempty"`
+}
+
+// ResourceDescription represents a resource in the describe API response
+type ResourceDescription struct {
+	DisplayName          string                          `json:"display_name"`
+	UniqueID             string                          `json:"unique_id"`
+	LifecycleStage       string                          `json:"lifecycle_stage"`
+	PropertiesSchema     json.RawMessage                 `json:"properties_schema,omitempty"`
+	Categories           []string                        `json:"categories,omitempty"`
+	Links                []map[string]interface{}        `json:"links,omitempty"`
+	InstructionsMarkdown string                          `json:"instructions_markdown,omitempty"`
+	Operations           map[string]OperationDescription `json:"operations,omitempty"`
+	HealthcheckEnabled   bool                            `json:"healthcheck_enabled,omitempty"`
+}
+
+// AppDescription represents an app in the describe API response
+type AppDescription struct {
+	Name              string                         `json:"name"`
+	SupportedVersions []string                       `json:"supported_versions"`
+	Resources         map[string]ResourceDescription `json:"resources"`
+	CanonicalBindings json.RawMessage                `json:"canonical_bindings,omitempty"`
+	Routes            json.RawMessage                `json:"routes,omitempty"`
+}
+
+// JSON-friendly canonical binding structures
+type jsonCanonicalBinding struct {
+	Operations []jsonOperationMetadata `json:"operations"`
+}
+
+type jsonOperationMetadata struct {
+	Name        string `json:"name"`
+	Priority    int    `json:"priority"`
+	Concurrency int    `json:"concurrency"`
+}
+
 // agent is the central handler for application operations
 type agent struct {
 	apiKey        string
@@ -103,8 +145,67 @@ type Config struct {
 	Logger       *slog.Logger // Optional custom logger
 }
 
+// LoggerOptions defines options for configuring the agent's logger
+type LoggerOptions struct {
+	Level  slog.Level
+	Output io.Writer
+	Format LogFormat // Enum for text/json
+}
+
+// LogFormat represents the format of logs (text or JSON)
+type LogFormat int
+
+const (
+	LogFormatText LogFormat = iota
+	LogFormatJSON
+)
+
+// DefaultLoggerOptions provides sensible defaults for the logger
+var DefaultLoggerOptions = LoggerOptions{
+	Level:  slog.LevelInfo,
+	Output: os.Stderr,
+	Format: LogFormatText,
+}
+
+// withDefaultLogger configures the agent with a default logger
+func withDefaultLogger(a *agent) {
+	opts := DefaultLoggerOptions
+	a.logger = newLoggerFromOptions(opts)
+}
+
+// newLoggerFromOptions creates a new logger with the specified options
+func newLoggerFromOptions(opts LoggerOptions) *slog.Logger {
+	var handler slog.Handler
+
+	if opts.Format == LogFormatJSON {
+		handler = slog.NewJSONHandler(opts.Output, &slog.HandlerOptions{
+			Level: opts.Level,
+		})
+	} else {
+		handler = slog.NewTextHandler(opts.Output, &slog.HandlerOptions{
+			Level: opts.Level,
+		})
+	}
+
+	return slog.New(handler)
+}
+
+// WithLogger sets a custom logger for the agent
+func WithLogger(logger *slog.Logger) func(*agent) {
+	return func(a *agent) {
+		a.logger = logger
+	}
+}
+
+// WithLoggerOptions configures the agent with a logger using the given options
+func WithLoggerOptions(opts LoggerOptions) func(*agent) {
+	return func(a *agent) {
+		a.logger = newLoggerFromOptions(opts)
+	}
+}
+
 // New creates a new agent with the provided configuration
-func New(config Config) *agent {
+func New(config Config, options ...func(*agent)) *agent {
 	mux := http.NewServeMux()
 
 	// Use default queue options if not specified
@@ -118,21 +219,13 @@ func New(config Config) *agent {
 		apiURL = "https://api.tempestdx.com"
 	}
 
-	// Use provided logger or create a default one
-	logger := config.Logger
-	if logger == nil {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		}))
-	}
-
 	// Create server
 	server := &http.Server{
 		Addr:    config.ServerAddr,
 		Handler: mux,
 	}
 
-	return &agent{
+	a := &agent{
 		apiKey:        config.APIKey,
 		apps:          make(map[string]*appConfig),
 		opQueue:       queue.NewTwoLockQueue(),
@@ -146,8 +239,25 @@ func New(config Config) *agent {
 		resultStop:    make(chan struct{}),
 		httpClient:    &http.Client{Timeout: 30 * time.Second},
 		apiURL:        apiURL,
-		logger:        logger,
 	}
+
+	// Apply default logger if no custom logger is provided
+	withDefaultLogger(a)
+
+	// Apply any provided options
+	for _, option := range options {
+		option(a)
+	}
+
+	// If config has a logger, use it (for backward compatibility)
+	if config.Logger != nil {
+		a.logger = config.Logger
+	}
+
+	// Register the describe route
+	a.registerDescribeHandler()
+
+	return a
 }
 
 // RegisterApp registers an app with the agent and sets up its HTTP routes
@@ -163,10 +273,12 @@ func (a *agent) RegisterApp(app *app.App, supportedVersions []string) {
 	a.apps[app.Name].generateCanonicalBindings()
 	operationRoutes := a.apps[app.Name].generateRoutes()
 	canonicalRoutes := a.apps[app.Name].generateCanonicalRoutes()
+	operationsPrefixRoutes := a.apps[app.Name].generateOperationRoutes()
 
 	a.logger.Debug("Generated routes",
 		"app_name", app.Name,
 		"operation_routes", len(operationRoutes),
+		"operations_prefix_routes", len(operationsPrefixRoutes),
 		"canonical_routes", len(canonicalRoutes))
 
 	// Register HTTP handlers for operation routes
@@ -186,6 +298,25 @@ func (a *agent) RegisterApp(app *app.App, supportedVersions []string) {
 
 		// Create and register the operation handler
 		a.registerOperationHandler(appName, version, resourceID, operationName)
+	}
+
+	// Register HTTP handlers for operation routes with /operations/ prefix
+	for path := range operationsPrefixRoutes {
+		// Parse elements from path
+		// Expected format: appName/version/resourceID/operations/operationName
+		parts := strings.Split(path, "/")
+		if len(parts) != 5 || parts[3] != "operations" {
+			a.logger.Warn("Invalid operations path format", "path", path)
+			continue // Invalid path format
+		}
+
+		appName := parts[0]
+		version := parts[1]
+		resourceID := parts[2]
+		operationName := parts[4]
+
+		// Create and register the operation handler with operations prefix
+		a.registerOperationPrefixHandler(appName, version, resourceID, operationName)
 	}
 
 	// Register HTTP handlers for canonical routes
@@ -208,6 +339,33 @@ func (a *agent) RegisterApp(app *app.App, supportedVersions []string) {
 	}
 
 	a.logger.Info("App registration complete", "app_name", app.Name)
+}
+
+// Run starts the agent and blocks until it receives a termination signal
+// (SIGINT or SIGTERM), then performs a graceful shutdown.
+func (a *agent) Run() error {
+	// Start the agent in a goroutine
+	go func() {
+		if err := a.Start(); err != nil && err != http.ErrServerClosed {
+			a.logger.Error("Failed to start agent", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	a.logger.Info("Agent running, press Ctrl+C to stop")
+
+	// Wait for termination signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+
+	a.logger.Info("Received termination signal, shutting down...", "signal", sig)
+
+	// Gracefully shutdown the agent
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return a.Stop(ctx)
 }
 
 // Start starts the HTTP server and worker goroutines
@@ -295,140 +453,154 @@ func (a *agent) EnqueueOperation(op *Operation) {
 
 // registerOperationHandler creates and registers a handler for a specific operation
 func (a *agent) registerOperationHandler(appName, version, resourceID, operationName string) {
-	// Build the route path
-	routePath := fmt.Sprintf("/%s/%s/%s/%s", appName, version, resourceID, operationName)
+	path := fmt.Sprintf("/%s/%s/%s/%s", appName, version, resourceID, operationName)
+	a.logger.Debug("Registering operation handler", "path", path)
 
-	a.logger.Debug("Registering operation handler",
-		"path", routePath,
-		"app", appName,
-		"version", version,
-		"resource", resourceID,
-		"operation", operationName)
+	handler := &operationHandler{
+		agent:         a,
+		appName:       appName,
+		version:       version,
+		resourceID:    resourceID,
+		operationName: operationName,
+	}
 
-	// Create the handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Start operation execution time
-		startTime := time.Now()
+	a.mux.HandleFunc(path, handler.ServeHTTP)
+	a.routes[path] = handler
+}
 
-		a.logger.Debug("Handling operation request",
-			"path", r.URL.Path,
-			"method", r.Method,
-			"remote_addr", r.RemoteAddr)
+// registerOperationPrefixHandler creates and registers a handler for an operation with the /operations/ prefix
+func (a *agent) registerOperationPrefixHandler(appName, version, resourceID, operationName string) {
+	path := fmt.Sprintf("/%s/%s/%s/operations/%s", appName, version, resourceID, operationName)
+	a.logger.Debug("Registering operation prefix handler", "path", path)
 
-		// Parse request body
-		body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			errMsg := fmt.Sprintf("error reading request: %v", err)
-			a.logger.Error("Failed to read request body", "error", err, "path", r.URL.Path)
-			http.Error(w, errMsg, http.StatusBadRequest)
-			return
-		}
-		defer r.Body.Close()
+	handler := &operationHandler{
+		agent:         a,
+		appName:       appName,
+		version:       version,
+		resourceID:    resourceID,
+		operationName: operationName,
+	}
 
-		// Parse operation request
-		var opReq resource.OperationRequest
-		if err := json.Unmarshal(body, &opReq); err != nil {
-			errMsg := fmt.Sprintf("error parsing request: %v", err)
-			a.logger.Error("Failed to parse request JSON", "error", err, "path", r.URL.Path)
-			http.Error(w, errMsg, http.StatusBadRequest)
-			return
-		}
+	a.mux.HandleFunc(path, handler.ServeHTTP)
+	a.routes[path] = handler
+}
 
-		// Extract task ID from metadata if available
-		taskID := ""
-		if opReq.Metadata != nil {
-			taskID = opReq.Metadata.TaskID
-		}
+// A dedicated handler type
+type operationHandler struct {
+	agent         *agent
+	appName       string
+	version       string
+	resourceID    string
+	operationName string
+}
 
-		requestLogger := a.logger.With("task_id", taskID, "operation", operationName)
-		requestLogger.Info("Processing operation", "resource_id", resourceID)
+// ServeHTTP handles operation requests
+func (h *operationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Only allow POST requests
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
-		// Find resource definition
-		appConfig, ok := a.apps[appName]
-		if !ok {
-			errMsg := fmt.Sprintf("app %s not found", appName)
-			requestLogger.Error("App not found", "app_name", appName)
-			http.Error(w, errMsg, http.StatusNotFound)
-			return
-		}
+	// Use the common parseOperationRequest function
+	opReq, taskID, err := parseOperationRequest(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error parsing request: %v", err), http.StatusBadRequest)
+		return
+	}
 
-		resourceDef, ok := appConfig.GetResourceDefinition(resourceID)
-		if !ok {
-			errMsg := fmt.Sprintf("resource %s not found", resourceID)
-			requestLogger.Error("Resource not found", "resource_id", resourceID)
-			http.Error(w, errMsg, http.StatusNotFound)
-			return
-		}
+	// Start operation execution time
+	startTime := time.Now()
 
-		// Find operation
-		operation, ok := resourceDef.GetOperation(operationName)
-		if !ok {
-			errMsg := fmt.Sprintf("operation %s not found", operationName)
-			requestLogger.Error("Operation not found", "operation", operationName)
-			http.Error(w, errMsg, http.StatusNotFound)
-			return
-		}
+	h.agent.logger.Debug("Handling operation request",
+		"path", r.URL.Path,
+		"method", r.Method,
+		"remote_addr", r.RemoteAddr)
 
-		// Execute operation
-		requestLogger.Debug("Executing operation")
-		resp, err := operation.Fn(r.Context(), &opReq)
+	requestLogger := h.agent.logger.With("task_id", taskID, "operation", h.operationName)
+	requestLogger.Info("Processing operation", "resource_id", h.resourceID)
 
-		// End operation execution time
-		endTime := time.Now()
-		duration := endTime.Sub(startTime)
+	// Find resource definition
+	appConfig, ok := h.agent.apps[h.appName]
+	if !ok {
+		errMsg := fmt.Sprintf("app %s not found", h.appName)
+		requestLogger.Error("App not found", "app_name", h.appName)
+		http.Error(w, errMsg, http.StatusNotFound)
+		return
+	}
 
-		// Prepare result for reporting
-		result := &OperationResult{
-			TaskID:    taskID,
-			StartTime: startTime,
-			EndTime:   endTime,
-		}
+	resourceDef, ok := appConfig.GetResourceDefinition(h.resourceID)
+	if !ok {
+		errMsg := fmt.Sprintf("resource %s not found", h.resourceID)
+		requestLogger.Error("Resource not found", "resource_id", h.resourceID)
+		http.Error(w, errMsg, http.StatusNotFound)
+		return
+	}
 
-		if err != nil {
-			// Operation failed
-			result.Status = "failure"
-			result.Error = err.Error()
-			result.Message = fmt.Sprintf("Operation %s failed: %v", operationName, err)
+	// Find operation
+	operation, ok := resourceDef.GetOperation(h.operationName)
+	if !ok {
+		errMsg := fmt.Sprintf("operation %s not found", h.operationName)
+		requestLogger.Error("Operation not found", "operation", h.operationName)
+		http.Error(w, errMsg, http.StatusNotFound)
+		return
+	}
 
-			requestLogger.Error("Operation failed",
-				"error", err.Error(),
-				"duration_ms", duration.Milliseconds())
+	// Execute operation
+	requestLogger.Debug("Executing operation")
+	resp, err := operation.Fn(r.Context(), opReq)
 
-			// Add result to reporting queue
-			a.resultQueue.Enqueue(result)
+	// End operation execution time
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
 
-			// Return error to caller
-			http.Error(w, fmt.Sprintf("operation failed: %v", err), http.StatusInternalServerError)
-			return
-		}
+	// Prepare result for reporting
+	result := &OperationResult{
+		TaskID:    taskID,
+		StartTime: startTime,
+		EndTime:   endTime,
+	}
 
-		// Operation succeeded
-		result.Status = "success"
-		result.Message = fmt.Sprintf("Operation %s completed successfully", operationName)
+	if err != nil {
+		// Operation failed
+		result.Status = "failure"
+		result.Error = err.Error()
+		result.Message = fmt.Sprintf("Operation %s failed: %v", h.operationName, err)
 
-		// Extract output if available
-		if resp != nil && resp.Resource != nil {
-			result.Output = resp.Resource.Properties
-		}
-
-		requestLogger.Info("Operation completed successfully",
+		requestLogger.Error("Operation failed",
+			"error", err.Error(),
 			"duration_ms", duration.Milliseconds())
 
 		// Add result to reporting queue
-		a.resultQueue.Enqueue(result)
+		h.agent.resultQueue.Enqueue(result)
 
-		// Return success response
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			requestLogger.Error("Failed to encode response", "error", err)
-			http.Error(w, fmt.Sprintf("error encoding response: %v", err), http.StatusInternalServerError)
-			return
-		}
-	})
+		// Return error to caller
+		http.Error(w, fmt.Sprintf("operation failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-	// Register the handler
-	a.mux.Handle(routePath, handler)
-	a.routes[routePath] = handler
+	// Operation succeeded
+	result.Status = "success"
+	result.Message = fmt.Sprintf("Operation %s completed successfully", h.operationName)
+
+	// Extract output if available
+	if resp != nil && resp.Resource != nil {
+		result.Output = resp.Resource.Properties
+	}
+
+	requestLogger.Info("Operation completed successfully",
+		"duration_ms", duration.Milliseconds())
+
+	// Add result to reporting queue
+	h.agent.resultQueue.Enqueue(result)
+
+	// Return success response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		requestLogger.Error("Failed to encode response", "error", err)
+		http.Error(w, fmt.Sprintf("error encoding response: %v", err), http.StatusInternalServerError)
+		return
+	}
 }
 
 // registerCanonicalHandler creates and registers a handler for a canonical operation type
@@ -847,7 +1019,8 @@ func (ac *appConfig) generateCanonicalRoutes() map[string]string {
 				// Convert CanonicalType to string name
 				typeStr := canonicalType.String()
 				if typeStr != "" {
-					routes[fmt.Sprintf("%s/%s/%s/canonical/%s", ac.Name, version, r.UniqueID(), typeStr)] =
+					// Remove "canonical/" from the path
+					routes[fmt.Sprintf("%s/%s/%s/%s", ac.Name, version, r.UniqueID(), typeStr)] =
 						fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
 				}
 			}
@@ -916,68 +1089,127 @@ func sortOperationsByPriority(operations []operationMetadata) {
 
 // Helper function to parse operation requests
 func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string, error) {
-	body, err := ioutil.ReadAll(r.Body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		return nil, "", fmt.Errorf("error reading request: %v", err)
 	}
 	defer r.Body.Close()
 
-	var opReq resource.OperationRequest
-	if err := json.Unmarshal(body, &opReq); err != nil {
+	// Parse request into a raw map first to support both formats
+	var rawData map[string]interface{}
+	if err := json.Unmarshal(body, &rawData); err != nil {
 		return nil, "", fmt.Errorf("error parsing request: %v", err)
 	}
 
-	// Extract task ID from metadata if available
+	// Create operation request
+	opReq := &resource.OperationRequest{
+		Metadata: &resource.Metadata{},
+	}
+
+	// Check if this is the standard API format with nested "task" structure
+	if taskRaw, hasTask := rawData["task"]; hasTask {
+		task, ok := taskRaw.(map[string]interface{})
+		if !ok {
+			return nil, "", fmt.Errorf("task field is not a valid object")
+		}
+
+		// Map task.input to Args
+		if input, hasInput := task["input"].(map[string]interface{}); hasInput {
+			opReq.Args = input
+		}
+
+		// Map task.resource to Resource
+		if resourceRaw, hasResource := task["resource"].(map[string]interface{}); hasResource {
+			// Create new resource instance
+			res := &resource.Resource{}
+
+			// Map basic string fields
+			if id, ok := resourceRaw["id"].(string); ok {
+				res.ExternalID = id
+			}
+			if name, ok := resourceRaw["name"].(string); ok {
+				res.Name = name
+			}
+			if displayName, ok := resourceRaw["display_name"].(string); ok {
+				res.DisplayName = displayName
+			}
+			if resType, ok := resourceRaw["type"].(string); ok {
+				res.Category = resource.Category(resType)
+			}
+
+			// Map properties
+			if props, ok := resourceRaw["properties"].(map[string]interface{}); ok {
+				res.Properties = props
+			}
+
+			// Add resource to request
+			opReq.Resource = res
+		}
+
+		// Map task.environment_variables (if supported by OperationRequest)
+		if envVarsRaw, hasEnvVars := task["environment_variables"].([]interface{}); hasEnvVars {
+			// Check if your OperationRequest has a field for environment variables
+			// If so, map them here
+			envVars := make(map[string]resource.EnvironmentVariable)
+			for _, envVar := range envVarsRaw {
+				if envVarMap, ok := envVar.(map[string]interface{}); ok {
+					key := envVarMap["key"].(string)
+					value := envVarMap["value"].(string)
+					envVars[key] = resource.EnvironmentVariable{
+						Key:   key,
+						Value: value,
+					}
+				}
+			}
+			opReq.Environment = envVars
+		}
+
+		// Map task.metadata
+		if metadataRaw, hasMetadata := task["metadata"].(map[string]interface{}); hasMetadata {
+			// Map relevant metadata fields
+			if taskID, ok := metadataRaw["task_id"].(string); ok {
+				opReq.Metadata.TaskID = taskID
+			}
+		}
+	} else {
+		// Direct format - treat the entire body as Args/input
+		opReq.Args = rawData
+	}
+
+	// Extract task_id from top level
+	if taskID, ok := rawData["task_id"].(string); ok {
+		opReq.Metadata.TaskID = taskID
+	}
+
+	// Map top-level metadata (might contain additional context)
+	if metadataRaw, hasMetadata := rawData["metadata"].(map[string]interface{}); hasMetadata {
+		opReq.Metadata.Owners = []resource.Owner{}
+		// Extract author info
+		// TODO: Expand owner support to include all owners supported on server
+		if authorRaw, hasAuthor := metadataRaw["author"].(map[string]interface{}); hasAuthor {
+			opReq.Metadata.Owners = append(opReq.Metadata.Owners, resource.Owner{
+				Email: authorRaw["email"].(string),
+				Name:  authorRaw["name"].(string),
+				Type:  resource.OwnerTypeUser,
+			})
+		}
+
+		// Extract project info
+		if projectID, ok := metadataRaw["project_id"].(string); ok {
+			opReq.Metadata.ProjectID = projectID
+		}
+		if projectName, ok := metadataRaw["project_name"].(string); ok {
+			opReq.Metadata.ProjectName = projectName
+		}
+	}
+
+	// Extract task ID for return value
 	taskID := ""
 	if opReq.Metadata != nil {
 		taskID = opReq.Metadata.TaskID
 	}
 
-	return &opReq, taskID, nil
-}
-
-// Helper function to create an operation result
-func createOperationResult(
-	taskID string,
-	startTime, endTime time.Time,
-	operationName string,
-	resp *resource.OperationResponse,
-	err error,
-	isCanonical bool,
-) *OperationResult {
-	result := &OperationResult{
-		TaskID:    taskID,
-		StartTime: startTime,
-		EndTime:   endTime,
-	}
-
-	if err != nil {
-		// Operation failed
-		result.Status = "failure"
-		result.Error = err.Error()
-
-		if isCanonical {
-			result.Message = fmt.Sprintf("All operations for canonical type %s failed", operationName)
-		} else {
-			result.Message = fmt.Sprintf("Operation %s failed: %v", operationName, err)
-		}
-	} else {
-		// Operation succeeded
-		result.Status = "success"
-
-		if isCanonical {
-			result.Message = fmt.Sprintf("Operation for canonical type %s completed successfully", operationName)
-		} else {
-			result.Message = fmt.Sprintf("Operation %s completed successfully", operationName)
-		}
-
-		// Extract output if available
-		if resp != nil && resp.Resource != nil {
-			result.Output = resp.Resource.Properties
-		}
-	}
-
-	return result
+	return opReq, taskID, nil
 }
 
 // Helper function to send success response to client
@@ -986,4 +1218,203 @@ func sendSuccessResponse(w http.ResponseWriter, resp *resource.OperationResponse
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, fmt.Sprintf("error encoding response: %v", err), http.StatusInternalServerError)
 	}
+}
+
+// registerDescribeHandler registers a handler to describe all registered resources and operations
+func (a *agent) registerDescribeHandler() {
+	a.logger.Debug("Registering describe handler", "path", "/describe")
+
+	// Register the handler for the describe route
+	a.mux.HandleFunc("/describe", func(w http.ResponseWriter, r *http.Request) {
+		a.logger.Debug("Handling describe request",
+			"method", r.Method,
+			"remote_addr", r.RemoteAddr)
+
+		// Only allow GET requests
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Prepare the response structure
+		response := make(map[string]AppDescription)
+
+		// Gather information from all registered apps
+		for appName, appConfig := range a.apps {
+			appDesc := AppDescription{
+				Name:              appName,
+				SupportedVersions: appConfig.SupportedVersions,
+				Resources:         make(map[string]ResourceDescription),
+			}
+
+			// Get resource definitions
+			for _, resourceDef := range appConfig.ResourceDefinitions() {
+				resDesc := ResourceDescription{
+					DisplayName: resourceDef.DisplayName(),
+					UniqueID:    resourceDef.UniqueID(),
+					Operations:  make(map[string]OperationDescription),
+				}
+
+				// Collect operations
+				for opName, operation := range resourceDef.Operations() {
+					opDesc := OperationDescription{
+						Name: opName,
+					}
+
+					// Get operation schema if available
+					if operation.Args() != nil {
+						argsJSON, _ := operation.Args().Raw.MarshalJSON()
+						opDesc.Args = argsJSON
+					}
+
+					// Get canonical operations
+					if canonOps := operation.CanonicalOperations(); len(canonOps) > 0 {
+						canonicalBindings := make([]map[string]interface{}, 0, len(canonOps))
+						for _, op := range canonOps {
+							canonicalBindings = append(canonicalBindings, map[string]interface{}{
+								"type":        op.Type.String(),
+								"priority":    op.Priority,
+								"concurrency": op.Concurrency,
+							})
+						}
+						opDesc.CanonicalBinding = canonicalBindings
+					}
+
+					// Get action config if available
+					if actionConfig := operation.ActionConfig(); actionConfig != nil {
+						opDesc.ActionConfig = map[string]interface{}{
+							"title":                 actionConfig.Title,
+							"description":           actionConfig.Description,
+							"requires_confirmation": actionConfig.RequiresConfirmation,
+						}
+					}
+
+					resDesc.Operations[opName] = opDesc
+				}
+
+				// Get resource properties schema if available
+				if props := resourceDef.PropertiesSchema(); props != nil {
+					propsJSON, _ := props.Raw.MarshalJSON()
+					resDesc.PropertiesSchema = propsJSON
+				}
+
+				// Get lifecycle stage
+				resDesc.LifecycleStage = resourceDef.LifecycleStage().String()
+
+				// Get categories
+				if cats := resourceDef.Categories(); len(cats) > 0 {
+					categories := make([]string, len(cats))
+					for i, cat := range cats {
+						categories[i] = string(cat)
+					}
+					resDesc.Categories = categories
+				}
+
+				// Get links
+				if links := resourceDef.Links(); len(links) > 0 {
+					linksMaps := make([]map[string]interface{}, len(links))
+					for i, link := range links {
+						linksMaps[i] = map[string]interface{}{
+							"title":    link.Title,
+							"url":      link.URL,
+							"type":     string(link.Type),
+							"category": string(link.Category),
+						}
+					}
+					resDesc.Links = linksMaps
+				}
+
+				// Get instructions
+				resDesc.InstructionsMarkdown = resourceDef.InstructionsMarkdown()
+
+				// Check if healthcheck is enabled
+				resDesc.HealthcheckEnabled = resourceDef.HasHealthCheck()
+
+				// Add the resource description to the app
+				appDesc.Resources[resourceDef.UniqueID()] = resDesc
+			}
+
+			// Add canonical bindings to the app description with proper formatting
+			if len(appConfig.CanonicalBindings) > 0 {
+				// Create a JSON-friendly structure with string keys for canonical types
+				jsonBindings := make(map[string]map[string][]jsonCanonicalBinding)
+
+				for resName, typeBindings := range appConfig.CanonicalBindings {
+					jsonBindings[string(resName)] = make(map[string][]jsonCanonicalBinding)
+
+					for canonType, bindings := range typeBindings {
+						// Convert canonical type enum to string
+						canonTypeStr := canonType.String()
+
+						// Convert bindings to JSON-friendly format
+						jsonBindingsList := make([]jsonCanonicalBinding, 0, len(bindings))
+						for _, binding := range bindings {
+							jsonOps := make([]jsonOperationMetadata, 0, len(binding.Operations))
+							for _, op := range binding.Operations {
+								jsonOps = append(jsonOps, jsonOperationMetadata{
+									Name:        op.Name,
+									Priority:    op.Priority,
+									Concurrency: op.Concurrency,
+								})
+							}
+							jsonBindingsList = append(jsonBindingsList, jsonCanonicalBinding{
+								Operations: jsonOps,
+							})
+						}
+
+						jsonBindings[string(resName)][canonTypeStr] = jsonBindingsList
+					}
+				}
+
+				// Convert to JSON
+				canonicalBindingsJSON, err := json.Marshal(jsonBindings)
+				if err != nil {
+					a.logger.Error("Failed to marshal canonical bindings", "error", err)
+				} else {
+					appDesc.CanonicalBindings = canonicalBindingsJSON
+				}
+			}
+
+			// Also add canonical routes information
+			routes := appConfig.generateCanonicalRoutes()
+			if len(routes) > 0 {
+				routesJSON, err := json.Marshal(routes)
+				if err != nil {
+					a.logger.Error("Failed to marshal canonical routes", "error", err)
+				} else {
+					// You might need to add a field for routes to AppDescription
+					// For now we can add it to the existing canonical bindings data
+					appDesc.Routes = routesJSON // This would require adding a Routes field to AppDescription
+				}
+			}
+
+			// Add the app description to the response
+			response[appName] = appDesc
+		}
+
+		// Set content type and return the JSON response
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			a.logger.Error("Failed to encode describe response", "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	})
+}
+
+// generateOperationRoutes creates routes for operations with the /operations/ path format
+func (ac *appConfig) generateOperationRoutes() map[string]string {
+	routes := make(map[string]string)
+
+	for _, r := range ac.ResourceDefinitions() {
+		for _, op := range r.Operations() {
+			// generate a route per operation, resource, and supported version
+			for _, version := range ac.SupportedVersions {
+				routes[fmt.Sprintf("%s/%s/%s/operations/%s", ac.Name, version, r.UniqueID(), op.Name())] =
+					fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
+			}
+		}
+	}
+
+	return routes
 }

@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/tempestdx/sdk-go/agent"
@@ -47,10 +46,10 @@ const pgdbCreateArgsSchema = `
 	"type": "object",
 	"properties": {
 		"name": {
-		"title": "Name",
-		"description": "The name of the database.",
-		"type": "string",
-		"default": "postgres"
+			"title": "Name",
+			"description": "The name of the database.",
+			"type": "string",
+			"default": "postgres"
 		}
 	},
 	"required": ["name"],
@@ -63,17 +62,30 @@ func pgdbHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, error)
 	}, nil
 }
 
+// First create operation with priority 100
+func pgdbCreatePrepare(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
+	fmt.Println("[Priority 100] Preparing to create PostgreSQL database...")
+	fmt.Println(req.Args["name"])
+	return &resource.OperationResponse{
+		Resource: req.Resource,
+	}, nil
+}
+
+// Second create operation with priority 100 (will run after the first one due to registration order)
+func pgdbCreateValidate(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
+	fmt.Println("[Priority 100] Validating PostgreSQL database parameters...")
+	fmt.Println(req.Args["name"])
+
+	return &resource.OperationResponse{
+		Resource: req.Resource,
+	}, nil
+}
+
+// Main create operation with priority 200 (will run last)
 func pgdbCreate(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	// In a real implementation, we would connect to PostgreSQL and create a database
-	fmt.Println("Creating PostgreSQL database:", req.Resource.Properties["name"])
+	fmt.Println("[Priority 200] Creating PostgreSQL database...")
 
-	// For demo purposes, just return the resource with updated properties
-	if req.Resource.Properties == nil {
-		req.Resource.Properties = make(map[string]interface{})
-	}
-
-	// Add creation timestamp
-	req.Resource.Properties["created_at"] = time.Now().Format(time.RFC3339)
+	fmt.Println(req.Args["name"])
 
 	return &resource.OperationResponse{
 		Resource: req.Resource,
@@ -105,13 +117,40 @@ func main() {
 		panic(err)
 	}
 
-	// Register the create operation
+	// Register multiple operations for create canonical type with different priorities
+
+	// Preparation step - Priority 100
+	pgdb.RegisterOperation(
+		"create_prep",
+		pgdbCreatePrepare,
+		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
+		resource.Op.On(resource.CanonicalOperation{
+			Type:        resource.Create,
+			Priority:    100,
+			Concurrency: 1,
+		}),
+	)
+
+	// Validation step - Priority 100 (will run after preparation due to registration order)
+	pgdb.RegisterOperation(
+		"create_validate",
+		pgdbCreateValidate,
+		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
+		resource.Op.On(resource.CanonicalOperation{
+			Type:        resource.Create,
+			Priority:    100,
+			Concurrency: 1,
+		}),
+	)
+
+	// Main creation step - Priority 200 (will run last)
 	pgdb.RegisterOperation(
 		"create_db",
 		pgdbCreate,
 		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
 		resource.Op.On(resource.CanonicalOperation{
 			Type:        resource.Create,
+			Priority:    200,
 			Concurrency: 1,
 		}),
 		resource.Op.EnableAction(resource.ActionConfig{
@@ -132,7 +171,7 @@ func main() {
 		panic(err)
 	}
 
-	// Create and configure the agent
+	// Create and configure the agent with a custom TEXT logger
 	agentInstance := agent.New(agent.Config{
 		APIKey:     os.Getenv("TEMPEST_API_KEY"),
 		ServerAddr: ":8080",
@@ -141,32 +180,20 @@ func main() {
 			NumResultWorkers: 2,
 			PollTimeout:      100 * time.Millisecond,
 		},
-	})
+	},
+		agent.WithLoggerOptions(agent.LoggerOptions{
+			Level:  slog.LevelInfo,
+			Output: os.Stderr,
+			Format: agent.LogFormatText, // Use text format instead of JSON
+		}))
 
 	// Register the PostgreSQL app with the agent
 	// The second parameter defines which versions of the app the agent supports
 	agentInstance.RegisterApp(pg, []string{"v1"})
 
-	// Start the agent in a goroutine
-	go func() {
-		fmt.Println("Starting PostgreSQL agent on port 8080...")
-		if err := agentInstance.Start(); err != nil {
-			log.Fatalf("Failed to start agent: %v", err)
-		}
-	}()
-
-	// Wait for termination signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	// Gracefully shutdown the agent
-	fmt.Println("Shutting down PostgreSQL agent...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := agentInstance.Stop(ctx); err != nil {
-		log.Fatalf("Failed to stop agent: %v", err)
+	fmt.Println("Starting PostgreSQL agent on port 8080...")
+	if err := agentInstance.Run(); err != nil {
+		log.Fatalf("Failed to run agent: %v", err)
 	}
 
 	fmt.Println("PostgreSQL agent stopped")

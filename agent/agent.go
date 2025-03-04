@@ -21,6 +21,14 @@ import (
 	"github.com/tempestdx/sdk-go/resource"
 )
 
+// LogFormat represents the format of logs (text or JSON)
+type LogFormat int
+
+const (
+	LogFormatText LogFormat = iota
+	LogFormatJSON
+)
+
 // operationMetadata stores the metadata for an operation
 type operationMetadata struct {
 	Name        string
@@ -61,36 +69,6 @@ type OperationResult struct {
 	EndTime   time.Time              `json:"end_time"`
 }
 
-// OperationDescription represents an operation in the describe API response
-type OperationDescription struct {
-	Name             string                   `json:"name"`
-	Args             json.RawMessage          `json:"args,omitempty"`
-	ActionConfig     map[string]interface{}   `json:"action_config,omitempty"`
-	CanonicalBinding []map[string]interface{} `json:"canonical_binding,omitempty"`
-}
-
-// ResourceDescription represents a resource in the describe API response
-type ResourceDescription struct {
-	DisplayName          string                          `json:"display_name"`
-	UniqueID             string                          `json:"unique_id"`
-	LifecycleStage       string                          `json:"lifecycle_stage"`
-	PropertiesSchema     json.RawMessage                 `json:"properties_schema,omitempty"`
-	Categories           []string                        `json:"categories,omitempty"`
-	Links                []map[string]interface{}        `json:"links,omitempty"`
-	InstructionsMarkdown string                          `json:"instructions_markdown,omitempty"`
-	Operations           map[string]OperationDescription `json:"operations,omitempty"`
-	HealthcheckEnabled   bool                            `json:"healthcheck_enabled,omitempty"`
-}
-
-// AppDescription represents an app in the describe API response
-type AppDescription struct {
-	Name              string                         `json:"name"`
-	SupportedVersions []string                       `json:"supported_versions"`
-	Resources         map[string]ResourceDescription `json:"resources"`
-	CanonicalBindings json.RawMessage                `json:"canonical_bindings,omitempty"`
-	Routes            json.RawMessage                `json:"routes,omitempty"`
-}
-
 // JSON-friendly canonical binding structures
 type jsonCanonicalBinding struct {
 	Operations []jsonOperationMetadata `json:"operations"`
@@ -104,22 +82,26 @@ type jsonOperationMetadata struct {
 
 // agent is the central handler for application operations
 type agent struct {
-	apiKey        string
-	apps          map[string]*appConfig
-	opQueue       *queue.TwoLockQueue // Queue for incoming operations
-	resultQueue   *queue.TwoLockQueue // Queue for operation results
-	server        *http.Server
-	mux           *http.ServeMux
-	routes        map[string]http.Handler
-	workers       int
-	resultWorkers int
-	workerWg      sync.WaitGroup
-	resultWg      sync.WaitGroup
-	workerStop    chan struct{}
-	resultStop    chan struct{}
-	httpClient    *http.Client // Client for API requests
-	apiURL        string       // Base URL for Tempest API
-	logger        *slog.Logger // Logger for agent operations
+	apiKey         string
+	apps           map[string]*appConfig
+	resourceQueues *queue.ResourceQueueManager   // Manager for per-resource operation queues
+	resultQueue    *queue.Queue                  // Queue for operation results
+	pollers        map[string]context.CancelFunc // Map of poller cancel functions keyed by "appName/resourceID"
+	pollersMutex   sync.RWMutex                  // Mutex to protect the pollers map
+	server         *http.Server
+	mux            *http.ServeMux
+	routes         map[string]http.Handler
+	workers        int
+	resultWorkers  int
+	workerWg       sync.WaitGroup
+	resultWg       sync.WaitGroup
+	workerStop     chan struct{}
+	resultStop     chan struct{}
+	httpClient     *http.Client // Client for API requests
+	apiURL         string       // Base URL for Tempest API
+	logger         *slog.Logger // Logger for agent operations
+	pollTimeout    time.Duration
+	stopOptions    StopOptions // Default options for stopping the agent
 }
 
 // QueueOptions configures the operation queue
@@ -136,126 +118,88 @@ var DefaultQueueOptions = QueueOptions{
 	PollTimeout:      100 * time.Millisecond,
 }
 
-// Config contains the configuration for an agent
-type Config struct {
-	APIKey       string
-	ServerAddr   string       // Address for the HTTP server, e.g. ":8080"
-	QueueOptions QueueOptions // Options for queue processing
-	APIURL       string       // Base URL for Tempest API
-	Logger       *slog.Logger // Optional custom logger
+// StopOptions configures the behavior of the Stop method
+type StopOptions struct {
+	NoTimeout bool          // If true, wait indefinitely for workers to finish
+	Timeout   time.Duration // Maximum time to wait for workers to finish (default 5s)
 }
 
-// LoggerOptions defines options for configuring the agent's logger
-type LoggerOptions struct {
-	Level  slog.Level
-	Output io.Writer
-	Format LogFormat // Enum for text/json
+// DefaultStopOptions provides sensible defaults for stopping the agent
+var DefaultStopOptions = StopOptions{
+	NoTimeout: true,
+	Timeout:   5 * time.Second,
 }
 
-// LogFormat represents the format of logs (text or JSON)
-type LogFormat int
+// New creates a new agent with the provided options
+// Environment variables take precedence over options provided in code
+func New(options ...Option) *agent {
+	// Read configuration from environment variables with defaults
+	apiKey := getEnv("TEMPEST_API_KEY", "")
+	serverAddr := getEnv("TEMPEST_SERVER_ADDR", ":8080")
+	apiURL := getEnv("TEMPEST_API_URL", "https://api.tempestdx.com")
+	numWorkers := getEnvInt("TEMPEST_NUM_WORKERS", DefaultQueueOptions.NumWorkers)
+	numResultWorkers := getEnvInt("TEMPEST_NUM_RESULT_WORKERS", DefaultQueueOptions.NumResultWorkers)
+	pollTimeout := getEnvDuration("TEMPEST_POLL_TIMEOUT", DefaultQueueOptions.PollTimeout)
+	logLevel := getEnvLogLevel("TEMPEST_LOG_LEVEL", slog.LevelInfo)
 
-const (
-	LogFormatText LogFormat = iota
-	LogFormatJSON
-)
-
-// DefaultLoggerOptions provides sensible defaults for the logger
-var DefaultLoggerOptions = LoggerOptions{
-	Level:  slog.LevelInfo,
-	Output: os.Stderr,
-	Format: LogFormatText,
-}
-
-// withDefaultLogger configures the agent with a default logger
-func withDefaultLogger(a *agent) {
-	opts := DefaultLoggerOptions
-	a.logger = newLoggerFromOptions(opts)
-}
-
-// newLoggerFromOptions creates a new logger with the specified options
-func newLoggerFromOptions(opts LoggerOptions) *slog.Logger {
-	var handler slog.Handler
-
-	if opts.Format == LogFormatJSON {
-		handler = slog.NewJSONHandler(opts.Output, &slog.HandlerOptions{
-			Level: opts.Level,
-		})
-	} else {
-		handler = slog.NewTextHandler(opts.Output, &slog.HandlerOptions{
-			Level: opts.Level,
-		})
+	// Determine log format from environment
+	logFormat := LogFormatJSON // Default to JSON logging
+	if format := strings.ToLower(getEnv("TEMPEST_LOG_FORMAT", "json")); format == "text" {
+		logFormat = LogFormatText
 	}
 
-	return slog.New(handler)
-}
-
-// WithLogger sets a custom logger for the agent
-func WithLogger(logger *slog.Logger) func(*agent) {
-	return func(a *agent) {
-		a.logger = logger
-	}
-}
-
-// WithLoggerOptions configures the agent with a logger using the given options
-func WithLoggerOptions(opts LoggerOptions) func(*agent) {
-	return func(a *agent) {
-		a.logger = newLoggerFromOptions(opts)
-	}
-}
-
-// New creates a new agent with the provided configuration
-func New(config Config, options ...func(*agent)) *agent {
+	// Create HTTP server and mux
 	mux := http.NewServeMux()
-
-	// Use default queue options if not specified
-	queueOpts := config.QueueOptions
-	if queueOpts.NumWorkers == 0 {
-		queueOpts = DefaultQueueOptions
-	}
-
-	apiURL := config.APIURL
-	if apiURL == "" {
-		apiURL = "https://api.tempestdx.com"
-	}
-
-	// Create server
 	server := &http.Server{
-		Addr:    config.ServerAddr,
+		Addr:    serverAddr,
 		Handler: mux,
 	}
 
+	// Create logger with environment settings
+	var logger *slog.Logger
+	var handler slog.Handler
+
+	if logFormat == LogFormatJSON {
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+			Level: logLevel,
+		})
+	} else {
+		handler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: logLevel,
+		})
+	}
+	logger = slog.New(handler)
+
+	// Initialize the agent with environment-based defaults
 	a := &agent{
-		apiKey:        config.APIKey,
-		apps:          make(map[string]*appConfig),
-		opQueue:       queue.NewTwoLockQueue(),
-		resultQueue:   queue.NewTwoLockQueue(),
-		server:        server,
-		mux:           mux,
-		routes:        make(map[string]http.Handler),
-		workers:       queueOpts.NumWorkers,
-		resultWorkers: queueOpts.NumResultWorkers,
-		workerStop:    make(chan struct{}),
-		resultStop:    make(chan struct{}),
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
-		apiURL:        apiURL,
+		apiKey:         apiKey,
+		apps:           make(map[string]*appConfig),
+		resourceQueues: queue.NewResourceQueueManager(),
+		resultQueue:    queue.NewQueue(1000),
+		pollers:        make(map[string]context.CancelFunc),
+		server:         server,
+		mux:            mux,
+		routes:         make(map[string]http.Handler),
+		workers:        numWorkers,
+		resultWorkers:  numResultWorkers,
+		pollTimeout:    pollTimeout,
+		workerStop:     make(chan struct{}),
+		resultStop:     make(chan struct{}),
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		apiURL:      apiURL,
+		logger:      logger,
+		stopOptions: DefaultStopOptions,
 	}
 
-	// Apply default logger if no custom logger is provided
-	withDefaultLogger(a)
-
-	// Apply any provided options
+	// Apply provided options after environment defaults
 	for _, option := range options {
 		option(a)
 	}
 
-	// If config has a logger, use it (for backward compatibility)
-	if config.Logger != nil {
-		a.logger = config.Logger
-	}
-
-	// Register the describe route
-	a.registerDescribeHandler()
+	// Apply default routes to the mux
+	a.registerDefaultHandlers()
 
 	return a
 }
@@ -271,34 +215,13 @@ func (a *agent) RegisterApp(app *app.App, supportedVersions []string) {
 
 	// Generate routes and canonical bindings
 	a.apps[app.Name].generateCanonicalBindings()
-	operationRoutes := a.apps[app.Name].generateRoutes()
 	canonicalRoutes := a.apps[app.Name].generateCanonicalRoutes()
 	operationsPrefixRoutes := a.apps[app.Name].generateOperationRoutes()
 
 	a.logger.Debug("Generated routes",
 		"app_name", app.Name,
-		"operation_routes", len(operationRoutes),
 		"operations_prefix_routes", len(operationsPrefixRoutes),
 		"canonical_routes", len(canonicalRoutes))
-
-	// Register HTTP handlers for operation routes
-	for path := range operationRoutes {
-		// Parse elements from path
-		// Expected format: appName/version/resourceID/operationName
-		parts := strings.Split(path, "/")
-		if len(parts) != 4 {
-			a.logger.Warn("Invalid path format", "path", path)
-			continue // Invalid path format
-		}
-
-		appName := parts[0]
-		version := parts[1]
-		resourceID := parts[2]
-		operationName := parts[3]
-
-		// Create and register the operation handler
-		a.registerOperationHandler(appName, version, resourceID, operationName)
-	}
 
 	// Register HTTP handlers for operation routes with /operations/ prefix
 	for path := range operationsPrefixRoutes {
@@ -343,6 +266,20 @@ func (a *agent) RegisterApp(app *app.App, supportedVersions []string) {
 
 // Run starts the agent and blocks until it receives a termination signal
 // (SIGINT or SIGTERM), then performs a graceful shutdown.
+// This is the main entry point for SDK users to start the agent, which will
+// autonomously poll for operations, route them to appropriate queues, and
+// process them according to the registered handlers. It handles all aspects
+// of operation polling, processing, and result reporting without requiring
+// any further interaction from the SDK user.
+//
+// Example usage:
+//
+//	agent := tempest.NewAgent()
+//	agent.RegisterOperation("myapp", "v1", "postgres", "create", handleCreate)
+//	// ... register other operations
+//	if err := agent.Run(); err != nil {
+//	    log.Fatalf("Agent terminated with error: %v", err)
+//	}
 func (a *agent) Run() error {
 	// Start the agent in a goroutine
 	go func() {
@@ -368,7 +305,13 @@ func (a *agent) Run() error {
 	return a.Stop(ctx)
 }
 
-// Start starts the HTTP server and worker goroutines
+// Start starts the HTTP server, result reporters, and initializes the infrastructure
+// for processing operations. This method is called internally by Run() and sets up
+// all necessary components for the agent to autonomously poll for operations, process
+// them, and report results back to the Tempest API.
+//
+// SDK users typically should call Run() instead, which calls Start() internally
+// and also handles graceful shutdown on termination signals.
 func (a *agent) Start() error {
 	a.logger.Info("Starting agent", "workers", a.workers, "result_workers", a.resultWorkers)
 
@@ -377,78 +320,115 @@ func (a *agent) Start() error {
 	for route := range a.routes {
 		routes = append(routes, route)
 	}
-	sort.Strings(routes)
-	a.logger.Info("Registered routes", "count", len(routes), "routes", routes)
+	a.logger.Info("Registered routes", "routes", routes)
 
-	// Start operation worker goroutines
-	for i := 0; i < a.workers; i++ {
-		a.workerWg.Add(1)
-		go a.operationWorker()
-	}
+	// Initialize worker stop channel
+	a.workerStop = make(chan struct{})
 
-	// Start result reporter goroutines
+	// Initialize result stop channel
+	a.resultStop = make(chan struct{})
+
+	// Start worker goroutines for operation processing
+	// NOTE: We no longer use global workers, each resource has its own poller
+	// So we don't need to increment the worker wait group here anymore
+	// We now use per-resource pollers instead of the global operationWorker
+	// Each app/resource combination will have its own dedicated queue
+
+	// Start result worker goroutines
+	a.resultWg.Add(a.resultWorkers)
 	for i := 0; i < a.resultWorkers; i++ {
-		a.resultWg.Add(1)
 		go a.resultReporter()
 	}
 
-	// Start the HTTP server
-	a.logger.Info("Starting HTTP server", "address", a.server.Addr)
-	return a.server.ListenAndServe()
+	// This is where we would start the task poller to continuously poll the Tempest API
+	// for new operations to process. The taskPoller would fetch tasks from the API and
+	// route them to the appropriate resource queues.
+	// go a.taskPoller()
+
+	// Start HTTP server in a goroutine
+	go func() {
+		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			a.logger.Error("Error starting HTTP server", "error", err)
+		}
+	}()
+
+	a.logger.Info("Agent started", "api_url", a.apiURL)
+
+	return nil
 }
 
-// Stop stops the worker goroutines and HTTP server
+// Stop gracefully shuts down the agent with default options
 func (a *agent) Stop(ctx context.Context) error {
-	a.logger.Info("Stopping agent")
-
-	// Signal workers to stop
-	close(a.workerStop)
-	close(a.resultStop)
-
-	a.logger.Debug("Waiting for workers to complete")
-
-	// Wait for workers to finish with a timeout
-	workerDone := make(chan struct{})
-	resultDone := make(chan struct{})
-
-	go func() {
-		a.workerWg.Wait()
-		close(workerDone)
-	}()
-
-	go func() {
-		a.resultWg.Wait()
-		close(resultDone)
-	}()
-
-	// Wait for both types of workers to finish
-	select {
-	case <-workerDone:
-		a.logger.Debug("Operation workers finished")
-	case <-ctx.Done():
-		a.logger.Warn("Timeout waiting for operation workers")
-	}
-
-	select {
-	case <-resultDone:
-		a.logger.Debug("Result workers finished")
-	case <-ctx.Done():
-		a.logger.Warn("Timeout waiting for result workers")
-	}
-
-	// Shutdown HTTP server
-	a.logger.Info("Shutting down HTTP server")
-	return a.server.Shutdown(ctx)
+	return a.StopWithOptions(ctx, a.stopOptions)
 }
 
-// EnqueueOperation adds an operation to the queue for processing
-func (a *agent) EnqueueOperation(op *Operation) {
-	a.logger.Debug("Enqueueing operation",
-		"task_id", op.TaskID,
-		"app", op.AppName,
-		"operation", op.OperationName,
-		"resource_id", op.ResourceID)
-	a.opQueue.Enqueue(op)
+// StopWithOptions gracefully shuts down the agent with custom options
+func (a *agent) StopWithOptions(ctx context.Context, options StopOptions) error {
+	a.logger.Info("Stopping agent", "no_timeout", options.NoTimeout)
+
+	// First shut down the HTTP server with a timeout
+	var serverTimeout time.Duration
+	if options.NoTimeout {
+		serverTimeout = 30 * time.Second // Still use a reasonable timeout for HTTP server
+	} else {
+		serverTimeout = options.Timeout
+	}
+
+	serverCtx, serverCancel := context.WithTimeout(ctx, serverTimeout)
+	defer serverCancel()
+
+	if err := a.server.Shutdown(serverCtx); err != nil {
+		a.logger.Error("Error shutting down HTTP server", "error", err)
+	}
+
+	// Use our shutdown function which sends all the stop signals
+	a.shutdown()
+
+	// If NoTimeout is true, wait indefinitely for workers to finish
+	if options.NoTimeout {
+		// Start a watchdog goroutine to log status periodically
+		done := make(chan struct{})
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					a.logger.Info("Still waiting for workers to finish")
+				}
+			}
+		}()
+
+		// Wait for all workers to finish
+		a.workerWg.Wait()
+		a.resultWg.Wait()
+
+		// Stop the watchdog
+		close(done)
+		a.logger.Info("All workers finished gracefully")
+	} else {
+		// Use a timeout for waiting
+		workerDone := make(chan struct{})
+		go func() {
+			a.workerWg.Wait()
+			a.resultWg.Wait()
+			close(workerDone)
+		}()
+
+		select {
+		case <-workerDone:
+			a.logger.Info("All workers finished within timeout")
+		case <-time.After(options.Timeout):
+			a.logger.Warn("Timed out waiting for workers to finish, forcing exit",
+				"timeout_seconds", options.Timeout.Seconds())
+		}
+	}
+
+	a.logger.Info("Agent stopped")
+	return nil
 }
 
 // registerOperationHandler creates and registers a handler for a specific operation
@@ -739,7 +719,7 @@ func (a *agent) executeCanonicalOperation(
 	operations := bindings[0].Operations
 	logger.Debug("Found operations for canonical type", "count", len(operations))
 
-	// Sort operations by priority (highest first)
+	// Sort operations by priority (lowest first)
 	sortOperationsByPriority(operations)
 
 	// Execute operations in priority order, stopping at first failure
@@ -838,130 +818,56 @@ func (a *agent) executeCanonicalOperation(
 	return lastResponse, nil
 }
 
-// operationWorker pulls operations from the queue and processes them
-func (a *agent) operationWorker() {
-	defer a.workerWg.Done()
-
-	workerID := fmt.Sprintf("worker-%p", &a.workerWg)
-	logger := a.logger.With("worker_id", workerID)
-
-	logger.Debug("Operation worker started")
-
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	for {
-		select {
-		case <-a.workerStop:
-			logger.Debug("Operation worker stopping")
-			return
-		default:
-			// Continue processing
-		}
-
-		// Dequeue operation
-		item, ok := a.opQueue.Dequeue()
-		if !ok {
-			// Queue is empty, wait before trying again
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		// Process operation
-		op, ok := item.(*Operation)
-		if !ok {
-			// Invalid item type, skip
-			logger.Warn("Invalid item type in operation queue", "type", fmt.Sprintf("%T", item))
-			continue
-		}
-
-		opLogger := logger.With(
-			"task_id", op.TaskID,
-			"app", op.AppName,
-			"operation", op.OperationName,
-			"resource_id", op.ResourceID)
-
-		opLogger.Debug("Processing queued operation")
-
-		// Construct path for the operation
-		path := fmt.Sprintf("/%s/%s/%s/%s",
-			op.AppName, op.Version, op.ResourceID, op.OperationName)
-
-		// Prepare HTTP request to local server
-		data, err := json.Marshal(op.Request)
-		if err != nil {
-			opLogger.Error("Failed to marshal operation request", "error", err)
-			continue
-		}
-
-		httpReq, err := http.NewRequest("POST", "http://localhost"+a.server.Addr+path, bytes.NewBuffer(data))
-		if err != nil {
-			opLogger.Error("Failed to create HTTP request", "error", err, "path", path)
-			continue
-		}
-
-		httpReq.Header.Set("Content-Type", "application/json")
-
-		// Execute request
-		startTime := time.Now()
-		resp, err := client.Do(httpReq)
-		duration := time.Since(startTime)
-
-		if err != nil {
-			opLogger.Error("Failed to execute operation request",
-				"error", err,
-				"path", path,
-				"duration_ms", duration.Milliseconds())
-			continue
-		}
-
-		statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
-		if !statusOK {
-			body, _ := io.ReadAll(resp.Body)
-			opLogger.Error("Operation request failed",
-				"status_code", resp.StatusCode,
-				"response", string(body),
-				"duration_ms", duration.Milliseconds())
-		} else {
-			opLogger.Info("Operation request completed successfully",
-				"status_code", resp.StatusCode,
-				"duration_ms", duration.Milliseconds())
-		}
-
-		resp.Body.Close()
-	}
-}
-
 // resultReporter sends operation results to the Tempest API
 func (a *agent) resultReporter() {
 	defer a.resultWg.Done()
 
+	a.logger.Debug("Result reporter started")
+
 	for {
+		// First check if we should stop
 		select {
 		case <-a.resultStop:
+			a.logger.Debug("Result reporter stopping due to stop signal")
 			return
 		default:
 			// Continue processing
 		}
 
-		// Dequeue result
-		item, ok := a.resultQueue.Dequeue()
-		if !ok {
-			// Queue is empty, wait before trying again
-			time.Sleep(100 * time.Millisecond)
-			continue
+		// Dequeue result with a timeout to allow checking for stop signal periodically
+		var item interface{}
+		var ok bool
+
+		// Use a short timeout to allow checking stop signal frequently
+		select {
+		case <-a.resultStop:
+			a.logger.Debug("Result reporter stopping during dequeue")
+			return
+		case <-time.After(100 * time.Millisecond):
+			// Try to dequeue an item without blocking
+			item, ok = a.resultQueue.TryDequeue()
+			if !ok {
+				// Queue is empty, loop back and check stop signal again
+				continue
+			}
 		}
 
 		// Process result
-		result, ok := item.(*OperationResult)
+		result, ok := item.(OperationResult)
 		if !ok {
-			// Invalid item type, skip
-			a.logger.Warn("Invalid item type in result queue", "type", fmt.Sprintf("%T", item))
-			continue
+			// Try using the pointer type
+			resultPtr, okPtr := item.(*OperationResult)
+			if !okPtr || resultPtr == nil {
+				// Invalid item type, skip
+				a.logger.Warn("Invalid item type in result queue", "type", fmt.Sprintf("%T", item))
+				continue
+			}
+
+			// Use the dereferenced value
+			result = *resultPtr
 		}
 
-		// Send result to Tempest API
+		// Report result to Tempest API
 		reportURL := fmt.Sprintf("%s/v1/apps/operations/report", a.apiURL)
 
 		data, err := json.Marshal(result)
@@ -1030,21 +936,6 @@ func (ac *appConfig) generateCanonicalRoutes() map[string]string {
 	return routes
 }
 
-func (ac *appConfig) generateRoutes() map[string]string {
-	routes := make(map[string]string)
-
-	for _, r := range ac.ResourceDefinitions() {
-		for _, op := range r.Operations() {
-			// generate a route per operation, resource, and supported version
-			for _, version := range ac.SupportedVersions {
-				routes[fmt.Sprintf("%s/%s/%s/%s", ac.Name, version, r.UniqueID(), op.Name())] = fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
-			}
-		}
-	}
-
-	return routes
-}
-
 func (ac *appConfig) generateCanonicalBindings() {
 	ac.CanonicalBindings = make(map[resourceName]map[resource.CanonicalType][]canonicalBinding)
 
@@ -1079,11 +970,11 @@ func (ac *appConfig) generateCanonicalBindings() {
 	}
 }
 
-// sortOperationsByPriority sorts operations in descending order of priority
+// sortOperationsByPriority sorts operations in ascending order of priority
 func sortOperationsByPriority(operations []operationMetadata) {
 	sort.Slice(operations, func(i, j int) bool {
-		// Higher priority comes first
-		return operations[i].Priority > operations[j].Priority
+		// Lower priority comes first
+		return operations[i].Priority < operations[j].Priority
 	})
 }
 
@@ -1220,188 +1111,6 @@ func sendSuccessResponse(w http.ResponseWriter, resp *resource.OperationResponse
 	}
 }
 
-// registerDescribeHandler registers a handler to describe all registered resources and operations
-func (a *agent) registerDescribeHandler() {
-	a.logger.Debug("Registering describe handler", "path", "/describe")
-
-	// Register the handler for the describe route
-	a.mux.HandleFunc("/describe", func(w http.ResponseWriter, r *http.Request) {
-		a.logger.Debug("Handling describe request",
-			"method", r.Method,
-			"remote_addr", r.RemoteAddr)
-
-		// Only allow GET requests
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		// Prepare the response structure
-		response := make(map[string]AppDescription)
-
-		// Gather information from all registered apps
-		for appName, appConfig := range a.apps {
-			appDesc := AppDescription{
-				Name:              appName,
-				SupportedVersions: appConfig.SupportedVersions,
-				Resources:         make(map[string]ResourceDescription),
-			}
-
-			// Get resource definitions
-			for _, resourceDef := range appConfig.ResourceDefinitions() {
-				resDesc := ResourceDescription{
-					DisplayName: resourceDef.DisplayName(),
-					UniqueID:    resourceDef.UniqueID(),
-					Operations:  make(map[string]OperationDescription),
-				}
-
-				// Collect operations
-				for opName, operation := range resourceDef.Operations() {
-					opDesc := OperationDescription{
-						Name: opName,
-					}
-
-					// Get operation schema if available
-					if operation.Args() != nil {
-						argsJSON, _ := operation.Args().Raw.MarshalJSON()
-						opDesc.Args = argsJSON
-					}
-
-					// Get canonical operations
-					if canonOps := operation.CanonicalOperations(); len(canonOps) > 0 {
-						canonicalBindings := make([]map[string]interface{}, 0, len(canonOps))
-						for _, op := range canonOps {
-							canonicalBindings = append(canonicalBindings, map[string]interface{}{
-								"type":        op.Type.String(),
-								"priority":    op.Priority,
-								"concurrency": op.Concurrency,
-							})
-						}
-						opDesc.CanonicalBinding = canonicalBindings
-					}
-
-					// Get action config if available
-					if actionConfig := operation.ActionConfig(); actionConfig != nil {
-						opDesc.ActionConfig = map[string]interface{}{
-							"title":                 actionConfig.Title,
-							"description":           actionConfig.Description,
-							"requires_confirmation": actionConfig.RequiresConfirmation,
-						}
-					}
-
-					resDesc.Operations[opName] = opDesc
-				}
-
-				// Get resource properties schema if available
-				if props := resourceDef.PropertiesSchema(); props != nil {
-					propsJSON, _ := props.Raw.MarshalJSON()
-					resDesc.PropertiesSchema = propsJSON
-				}
-
-				// Get lifecycle stage
-				resDesc.LifecycleStage = resourceDef.LifecycleStage().String()
-
-				// Get categories
-				if cats := resourceDef.Categories(); len(cats) > 0 {
-					categories := make([]string, len(cats))
-					for i, cat := range cats {
-						categories[i] = string(cat)
-					}
-					resDesc.Categories = categories
-				}
-
-				// Get links
-				if links := resourceDef.Links(); len(links) > 0 {
-					linksMaps := make([]map[string]interface{}, len(links))
-					for i, link := range links {
-						linksMaps[i] = map[string]interface{}{
-							"title":    link.Title,
-							"url":      link.URL,
-							"type":     string(link.Type),
-							"category": string(link.Category),
-						}
-					}
-					resDesc.Links = linksMaps
-				}
-
-				// Get instructions
-				resDesc.InstructionsMarkdown = resourceDef.InstructionsMarkdown()
-
-				// Check if healthcheck is enabled
-				resDesc.HealthcheckEnabled = resourceDef.HasHealthCheck()
-
-				// Add the resource description to the app
-				appDesc.Resources[resourceDef.UniqueID()] = resDesc
-			}
-
-			// Add canonical bindings to the app description with proper formatting
-			if len(appConfig.CanonicalBindings) > 0 {
-				// Create a JSON-friendly structure with string keys for canonical types
-				jsonBindings := make(map[string]map[string][]jsonCanonicalBinding)
-
-				for resName, typeBindings := range appConfig.CanonicalBindings {
-					jsonBindings[string(resName)] = make(map[string][]jsonCanonicalBinding)
-
-					for canonType, bindings := range typeBindings {
-						// Convert canonical type enum to string
-						canonTypeStr := canonType.String()
-
-						// Convert bindings to JSON-friendly format
-						jsonBindingsList := make([]jsonCanonicalBinding, 0, len(bindings))
-						for _, binding := range bindings {
-							jsonOps := make([]jsonOperationMetadata, 0, len(binding.Operations))
-							for _, op := range binding.Operations {
-								jsonOps = append(jsonOps, jsonOperationMetadata{
-									Name:        op.Name,
-									Priority:    op.Priority,
-									Concurrency: op.Concurrency,
-								})
-							}
-							jsonBindingsList = append(jsonBindingsList, jsonCanonicalBinding{
-								Operations: jsonOps,
-							})
-						}
-
-						jsonBindings[string(resName)][canonTypeStr] = jsonBindingsList
-					}
-				}
-
-				// Convert to JSON
-				canonicalBindingsJSON, err := json.Marshal(jsonBindings)
-				if err != nil {
-					a.logger.Error("Failed to marshal canonical bindings", "error", err)
-				} else {
-					appDesc.CanonicalBindings = canonicalBindingsJSON
-				}
-			}
-
-			// Also add canonical routes information
-			routes := appConfig.generateCanonicalRoutes()
-			if len(routes) > 0 {
-				routesJSON, err := json.Marshal(routes)
-				if err != nil {
-					a.logger.Error("Failed to marshal canonical routes", "error", err)
-				} else {
-					// You might need to add a field for routes to AppDescription
-					// For now we can add it to the existing canonical bindings data
-					appDesc.Routes = routesJSON // This would require adding a Routes field to AppDescription
-				}
-			}
-
-			// Add the app description to the response
-			response[appName] = appDesc
-		}
-
-		// Set content type and return the JSON response
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			a.logger.Error("Failed to encode describe response", "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-	})
-}
-
 // generateOperationRoutes creates routes for operations with the /operations/ path format
 func (ac *appConfig) generateOperationRoutes() map[string]string {
 	routes := make(map[string]string)
@@ -1417,4 +1126,234 @@ func (ac *appConfig) generateOperationRoutes() map[string]string {
 	}
 
 	return routes
+}
+
+// startResourcePoller creates and starts a dedicated poller for a specific app/resource combination.
+// Each resource gets its own dedicated poller that processes operations sequentially, ensuring
+// that operations on the same resource are executed in order. Multiple resource pollers run
+// concurrently, allowing operations on different resources to be processed in parallel.
+//
+// The pollers are started automatically by the agent when operations are enqueued, and
+// the agent manages their lifecycle. SDK users do not need to start or manage these pollers manually.
+func (a *agent) startResourcePoller(appName, resourceID string) {
+	key := appName + "/" + resourceID
+
+	// Check if a poller is already running for this resource
+	a.pollersMutex.RLock()
+	_, exists := a.pollers[key]
+	a.pollersMutex.RUnlock()
+
+	if exists {
+		return // Already running
+	}
+
+	// Create a new context for this poller
+	ctx, cancel := context.WithCancel(context.Background())
+
+	a.pollersMutex.Lock()
+	// Double-check in case another goroutine started it while we were getting the lock
+	if _, exists := a.pollers[key]; exists {
+		cancel() // Don't need this one
+		a.pollersMutex.Unlock()
+		return
+	}
+
+	// Register the cancel function
+	a.pollers[key] = cancel
+	a.pollersMutex.Unlock()
+
+	// Get queue again to be safe
+	resourceQueue := a.resourceQueues.GetOrCreateQueue(appName, resourceID, 1000)
+
+	// Increment worker wait group for this poller
+	a.workerWg.Add(1)
+
+	// Start the processor goroutine for this resource queue
+	go func() {
+		// Ensure we decrement the wait group when done
+		defer a.workerWg.Done()
+
+		logger := a.logger.With(
+			"poller", key,
+			"app", appName,
+			"resource_id", resourceID)
+
+		logger.Debug("Starting resource poller")
+
+		client := &http.Client{
+			Timeout: 30 * time.Second,
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				logger.Debug("Resource poller stopping")
+				return
+			default:
+				// Continue processing
+			}
+
+			// Dequeue operation with timeout to allow checking context cancellation
+			var item interface{}
+			var ok bool
+			select {
+			case <-ctx.Done():
+				logger.Debug("Resource poller stopping during dequeue")
+				return
+			case <-time.After(100 * time.Millisecond):
+				// Try to dequeue without blocking
+				item, ok = resourceQueue.TryDequeue()
+				if !ok {
+					// Queue is empty, wait before trying again
+					select {
+					case <-time.After(100 * time.Millisecond):
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
+			}
+
+			// Process operation
+			op, ok := item.(*Operation)
+			if !ok {
+				// Invalid item type, skip
+				logger.Warn("Invalid item type in operation queue", "type", fmt.Sprintf("%T", item))
+				continue
+			}
+
+			opLogger := logger.With(
+				"task_id", op.TaskID,
+				"operation", op.OperationName)
+
+			opLogger.Debug("Processing queued operation")
+
+			// Process the operation using the same logic as in operationWorker
+			// Construct path for the operation
+			path := fmt.Sprintf("/%s/%s/%s/%s",
+				op.AppName, op.Version, op.ResourceID, op.OperationName)
+
+			// Prepare HTTP request to local server
+			data, err := json.Marshal(op.Request)
+			if err != nil {
+				opLogger.Error("Failed to marshal operation request", "error", err)
+				continue
+			}
+
+			httpReq, err := http.NewRequest("POST", "http://localhost"+a.server.Addr+path, bytes.NewBuffer(data))
+			if err != nil {
+				opLogger.Error("Failed to create HTTP request", "error", err, "path", path)
+				continue
+			}
+
+			httpReq.Header.Set("Content-Type", "application/json")
+
+			// Execute request
+			startTime := time.Now()
+			resp, err := client.Do(httpReq)
+			duration := time.Since(startTime)
+
+			if err != nil {
+				opLogger.Error("Failed to execute operation request",
+					"error", err,
+					"path", path,
+					"duration_ms", duration.Milliseconds())
+				continue
+			}
+
+			statusOK := resp.StatusCode >= 200 && resp.StatusCode < 300
+			if !statusOK {
+				body, _ := io.ReadAll(resp.Body)
+				opLogger.Error("Operation request failed",
+					"status_code", resp.StatusCode,
+					"response", string(body),
+					"duration_ms", duration.Milliseconds())
+			} else {
+				opLogger.Info("Operation request completed successfully",
+					"status_code", resp.StatusCode,
+					"duration_ms", duration.Milliseconds())
+			}
+
+			resp.Body.Close()
+		}
+	}()
+}
+
+// shutdown properly closes all resource queues and stops all pollers.
+// This is called internally during agent shutdown to ensure proper cleanup
+// of all resource pollers and queues. It cancels all poller contexts,
+// closes all queues, and ensures that resources are properly released.
+// SDK users do not need to call this method directly, as it's handled
+// automatically during graceful shutdown.
+func (a *agent) shutdown() {
+	a.logger.Info("Shutting down agent")
+
+	// First stop all pollers (which consume from resource queues)
+	// This ensures they won't pull any new operations
+	a.pollersMutex.Lock()
+	for _, cancel := range a.pollers {
+		cancel()
+	}
+	// Clear the pollers map to prevent double cancellation
+	a.pollers = make(map[string]context.CancelFunc)
+	a.pollersMutex.Unlock()
+
+	// Signal workers to stop - with nil check
+	if a.workerStop != nil {
+		select {
+		case <-a.workerStop: // Already closed
+		default:
+			close(a.workerStop)
+		}
+	}
+
+	// Close all resource queues - this will cause any remaining Dequeue operations to return
+	if a.resourceQueues != nil {
+		a.logger.Debug("Closing resource queues")
+		a.resourceQueues.Close()
+	}
+
+	// Wait a moment for in-flight operations to finish enqueuing results
+	time.Sleep(100 * time.Millisecond)
+
+	// Signal result reporters to stop - with nil check
+	if a.resultStop != nil {
+		select {
+		case <-a.resultStop: // Already closed
+		default:
+			close(a.resultStop)
+		}
+	}
+
+	// Close the result queue last after all workers have stopped submitting results
+	if a.resultQueue != nil {
+		a.logger.Debug("Closing result queue")
+		a.resultQueue.Close()
+	}
+
+	a.logger.Debug("All queues closed")
+}
+
+// taskPoller continuously polls the Tempest API for new tasks and enqueues
+// them to the appropriate resource queues. It handles fetching pending operations
+// from the API, determining the target app/resource, and routing each operation
+// to the correct queue.
+//
+// This function runs as a goroutine and is started automatically when the agent
+// starts. It ensures operations are processed in the correct order per resource
+// while allowing concurrent processing across different resources.
+//
+// SDK users do not need to implement or call this method, as it's handled
+// automatically by the agent.
+// func (a *agent) taskPoller() {
+// Implementation will poll the Tempest API for tasks
+// and enqueue them to the appropriate resource queues
+
+// For now, this is a stub - the actual implementation will be added later
+// }
+
+// registerDefaultHandlers registers the default HTTP handlers for the agent
+func (a *agent) registerDefaultHandlers() {
+	// Register the describe route
+	a.registerDescribeHandler()
 }

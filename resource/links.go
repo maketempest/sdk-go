@@ -1,5 +1,9 @@
 package resource
 
+import (
+	"net/url"
+)
+
 // Link represents a documentation or related resource link
 type Link struct {
 	Title    string       `json:"title"`
@@ -10,7 +14,13 @@ type Link struct {
 
 func (l *Link) isValid() bool {
 	// Links must have a title and url
-	if l.Title == "" || l.URL == "" {
+	if l.Title == "" {
+		return false
+	}
+
+	// Validate URL using url.Parse
+	_, err := url.Parse(l.URL)
+	if err != nil || l.URL == "" {
 		return false
 	}
 

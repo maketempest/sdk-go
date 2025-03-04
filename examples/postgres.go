@@ -171,21 +171,42 @@ func main() {
 		panic(err)
 	}
 
-	// Create and configure the agent with a custom TEXT logger
-	agentInstance := agent.New(agent.Config{
-		APIKey:     os.Getenv("TEMPEST_API_KEY"),
-		ServerAddr: ":8080",
-		QueueOptions: agent.QueueOptions{
-			NumWorkers:       5,
-			NumResultWorkers: 2,
-			PollTimeout:      100 * time.Millisecond,
-		},
-	},
-		agent.WithLoggerOptions(agent.LoggerOptions{
-			Level:  slog.LevelInfo,
-			Output: os.Stderr,
-			Format: agent.LogFormatText, // Use text format instead of JSON
-		}))
+	// Create and configure the agent using the new functional options pattern
+	// This will automatically use environment variables if set, or use these explicitly provided options
+	agentInstance := agent.New(
+		// Specify server address explicitly
+		agent.WithServerAddr(":8080"),
+
+		// Set worker counts
+		agent.WithWorkers(5),
+		agent.WithResultWorkers(2),
+
+		// Set poll timeout
+		agent.WithPollTimeout(100*time.Millisecond),
+
+		// Configure logging to use text format instead of default JSON
+		agent.WithLogger(slog.New(
+			slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+				Level: slog.LevelInfo,
+			}),
+		)),
+
+		// Set custom stop options
+		agent.WithStopOptions(agent.StopOptions{
+			NoTimeout: true,
+		}),
+	)
+
+	// To see how environment variables can be used, you could set:
+	// export TEMPEST_API_KEY="your-api-key"
+	// export TEMPEST_SERVER_ADDR=":8080"
+	// export TEMPEST_NUM_WORKERS="5"
+	// export TEMPEST_NUM_RESULT_WORKERS="2"
+	// export TEMPEST_POLL_TIMEOUT="100ms"
+	// export TEMPEST_LOG_LEVEL="info"
+	// export TEMPEST_LOG_FORMAT="text"
+	//
+	// And then simply use: agentInstance := agent.New()
 
 	// Register the PostgreSQL app with the agent
 	// The second parameter defines which versions of the app the agent supports
@@ -197,4 +218,11 @@ func main() {
 	}
 
 	fmt.Println("PostgreSQL agent stopped")
+
+	// Later, when stopping:
+	ctx := context.Background()
+	err = agentInstance.Stop(ctx) // Will use the configured stop options
+	if err != nil {
+		log.Fatalf("Failed to stop agent: %v", err)
+	}
 }

@@ -30,7 +30,7 @@ type ResourceDefinition struct {
 	properties           *jsonschema.Schema
 	instructionsMarkdown string
 
-	operations  map[string]*operation
+	operations  map[string]*Operation
 	healthCheck HealthCheckFunc
 
 	publishedState *resourceStatefulMetadata
@@ -44,9 +44,9 @@ func (r *ResourceDefinition) DisplayName() string {
 	return r.displayName
 }
 
-func (r *ResourceDefinition) Operations() map[string]*operation {
+func (r *ResourceDefinition) Operations() map[string]*Operation {
 	// returns a copy of the operations
-	operationsCopy := make(map[string]*operation, len(r.operations))
+	operationsCopy := make(map[string]*Operation, len(r.operations))
 	maps.Copy(operationsCopy, r.operations)
 	return operationsCopy
 }
@@ -66,7 +66,7 @@ func NewDefinition(config DefinitionConfig, opts ...resourceDefinitionOption) (*
 		uniqueID:       config.UniqueID,
 		lifecycleStage: config.LifecycleStage,
 		properties:     config.Properties,
-		operations:     make(map[string]*operation),
+		operations:     make(map[string]*Operation),
 	}
 
 	if config.DisplayName == "" {
@@ -144,7 +144,7 @@ func WithCategories(categories ...Category) resourceDefinitionOption {
 }
 
 func (r *ResourceDefinition) RegisterOperation(name string, fn OperationFunc, opts ...operationOption) *ResourceDefinition {
-	op := newOperation(name, fn, opts...)
+	op := NewOperation(name, fn, opts...)
 	r.operations[name] = op
 	return r
 }
@@ -207,7 +207,7 @@ func (r *ResourceDefinition) JSON() ([]byte, error) {
 }
 
 // GetOperation returns the operation with the given name.
-func (r *ResourceDefinition) GetOperation(name string) (*operation, bool) {
+func (r *ResourceDefinition) GetOperation(name string) (*Operation, bool) {
 	op, ok := r.Operations()[name]
 	return op, ok
 }

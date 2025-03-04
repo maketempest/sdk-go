@@ -53,7 +53,7 @@ type OperationResponse struct {
 
 type OperationFunc func(ctx context.Context, req *OperationRequest) (*OperationResponse, error)
 
-type operation struct {
+type Operation struct {
 	name string
 	args *jsonschema.Schema
 
@@ -65,27 +65,27 @@ type operation struct {
 	canonicalOps []CanonicalOperation
 }
 
-func (o *operation) IsCanonical() bool {
+func (o *Operation) IsCanonical() bool {
 	return len(o.canonicalOps) > 0
 }
 
-func (o *operation) CanonicalOperations() []CanonicalOperation {
+func (o *Operation) CanonicalOperations() []CanonicalOperation {
 	return o.canonicalOps
 }
 
-func (o *operation) IsAction() bool {
+func (o *Operation) IsAction() bool {
 	return o.actionConfig != nil
 }
 
-func (o *operation) Name() string {
+func (o *Operation) Name() string {
 	return o.name
 }
 
-func (o *operation) Args() *jsonschema.Schema {
+func (o *Operation) Args() *jsonschema.Schema {
 	return o.args
 }
 
-func (o *operation) ActionConfig() *ActionConfig {
+func (o *Operation) ActionConfig() *ActionConfig {
 	return o.actionConfig
 }
 
@@ -95,8 +95,8 @@ type ActionConfig struct {
 	RequiresConfirmation bool
 }
 
-func newOperation(name string, fn OperationFunc, opts ...operationOption) *operation {
-	op := &operation{
+func NewOperation(name string, fn OperationFunc, opts ...operationOption) *Operation {
+	op := &Operation{
 		name:         name,
 		Fn:           fn,
 		canonicalOps: []CanonicalOperation{},
@@ -115,7 +115,7 @@ func newOperation(name string, fn OperationFunc, opts ...operationOption) *opera
 	return op
 }
 
-type operationOption func(*operation) error
+type operationOption func(*Operation) error
 
 var operationOptions = struct {
 	EnableAction func(ActionConfig) operationOption
@@ -137,42 +137,42 @@ var (
 )
 
 func enableAction(config ActionConfig) operationOption {
-	return func(op *operation) error {
+	return func(op *Operation) error {
 		op.actionConfig = &config
 		return nil
 	}
 }
 
 func withPre(fn OperationFunc) operationOption {
-	return func(op *operation) error {
+	return func(op *Operation) error {
 		op.Pre = fn
 		return nil
 	}
 }
 
 func withPost(fn OperationFunc) operationOption {
-	return func(op *operation) error {
+	return func(op *Operation) error {
 		op.Post = fn
 		return nil
 	}
 }
 
 func withArgs(args *jsonschema.Schema) operationOption {
-	return func(op *operation) error {
+	return func(op *Operation) error {
 		op.args = args
 		return nil
 	}
 }
 
 func on(canonicals ...CanonicalOperation) operationOption {
-	return func(op *operation) error {
+	return func(op *Operation) error {
 		op.canonicalOps = append(op.canonicalOps, canonicals...)
 		return nil
 	}
 }
 
 // JSON returns the JSON representation of the operation
-func (o *operation) JSON() ([]byte, error) {
+func (o *Operation) JSON() ([]byte, error) {
 	data := map[string]any{
 		"name": o.name,
 	}

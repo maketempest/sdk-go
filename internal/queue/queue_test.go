@@ -1,49 +1,48 @@
 package queue
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestNewTwoLockQueue(t *testing.T) {
-	q := NewTwoLockQueue()
+func TestNewQueue(t *testing.T) {
+	q := NewQueue(10)
 	if q == nil {
-		t.Fatal("NewTwoLockQueue returned nil")
+		t.Fatal("NewQueue returned nil")
 	}
-	if q.head == nil {
-		t.Error("queue head is nil")
+	if q.items == nil {
+		t.Error("queue items channel is nil")
 	}
-	if q.tail == nil {
-		t.Error("queue tail is nil")
+	if q.done == nil {
+		t.Error("queue done channel is nil")
 	}
-	if q.head != q.tail {
-		t.Error("head and tail should point to the same dummy node in an empty queue")
+	if cap(q.items) != 10 {
+		t.Errorf("expected capacity 10, got %d", cap(q.items))
 	}
-	if q.head.value != nil {
-		t.Error("dummy node value should be nil")
-	}
-	if q.head.next != nil {
-		t.Error("dummy node next should be nil")
+	if !q.IsEmpty() {
+		t.Error("new queue should be empty")
 	}
 }
 
 func TestEnqueueDequeue(t *testing.T) {
-	q := NewTwoLockQueue()
+	q := NewQueue(10)
 
 	// Test enqueue
-	q.Enqueue(42)
+	success := q.Enqueue(42)
+	if !success {
+		t.Error("Enqueue should return true for successful enqueue")
+	}
 
-	// Check if queue is not empty
-	if q.IsEmpty() {
-		t.Error("queue should not be empty after enqueue")
+	// Check queue size
+	if q.Size() != 1 {
+		t.Errorf("expected size 1, got %d", q.Size())
 	}
 
 	// Test dequeue
 	value, ok := q.Dequeue()
 	if !ok {
-		t.Error("dequeue failed, but queue should have an item")
+		t.Error("Dequeue failed, queue should have an item")
 	}
 	if value != 42 {
 		t.Errorf("expected 42, got %v", value)
@@ -54,235 +53,361 @@ func TestEnqueueDequeue(t *testing.T) {
 		t.Error("queue should be empty after dequeue")
 	}
 
-	// Dequeue from empty queue should return (nil, false)
-	value, ok = q.Dequeue()
+	// Dequeue from empty queue should block, so use TryDequeue
+	value, ok = q.TryDequeue()
 	if ok {
-		t.Error("dequeue from empty queue should return ok=false")
+		t.Error("TryDequeue from empty queue should return ok=false")
 	}
 	if value != nil {
-		t.Errorf("dequeue from empty queue should return nil, got %v", value)
+		t.Errorf("TryDequeue from empty queue should return nil, got %v", value)
 	}
 }
 
-func TestPeek(t *testing.T) {
-	q := NewTwoLockQueue()
+func TestTryEnqueueTryDequeue(t *testing.T) {
+	// Create a queue with capacity 1
+	q := NewQueue(1)
 
-	// Peek on empty queue
-	value, ok := q.Peek()
+	// First enqueue should succeed
+	success := q.TryEnqueue(1)
+	if !success {
+		t.Error("First TryEnqueue should succeed")
+	}
+
+	// Second enqueue should fail (queue full)
+	success = q.TryEnqueue(2)
+	if success {
+		t.Error("Second TryEnqueue should fail when queue is full")
+	}
+
+	// Dequeue should succeed
+	value, ok := q.TryDequeue()
+	if !ok {
+		t.Error("TryDequeue should succeed")
+	}
+	if value != 1 {
+		t.Errorf("Expected value 1, got %v", value)
+	}
+
+	// Second dequeue should fail (queue empty)
+	_, ok = q.TryDequeue()
 	if ok {
-		t.Error("peek on empty queue should return ok=false")
-	}
-	if value != nil {
-		t.Errorf("peek on empty queue should return nil, got %v", value)
-	}
-
-	// Add item and peek
-	q.Enqueue(100)
-	value, ok = q.Peek()
-	if !ok {
-		t.Error("peek should return ok=true for non-empty queue")
-	}
-	if value != 100 {
-		t.Errorf("expected 100, got %v", value)
-	}
-
-	// Peek should not remove the item
-	if q.IsEmpty() {
-		t.Error("queue should not be empty after peek")
-	}
-
-	// Dequeue should still work after peek
-	value, ok = q.Dequeue()
-	if !ok {
-		t.Error("dequeue failed after peek")
-	}
-	if value != 100 {
-		t.Errorf("expected 100, got %v", value)
+		t.Error("TryDequeue from empty queue should fail")
 	}
 }
 
-func TestIsEmpty(t *testing.T) {
-	q := NewTwoLockQueue()
+func TestDequeueBlocking(t *testing.T) {
+	q := NewQueue(1)
 
-	// New queue should be empty
-	if !q.IsEmpty() {
-		t.Error("new queue should be empty")
+	// Start a goroutine that will wait for an item
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var result interface{}
+	var success bool
+
+	go func() {
+		defer wg.Done()
+		// This should block until an item is available
+		result, success = q.Dequeue()
+	}()
+
+	// Give the goroutine time to start waiting
+	time.Sleep(50 * time.Millisecond)
+
+	// Add an item to the queue
+	q.Enqueue(123)
+
+	// Wait for the goroutine to process the item
+	wg.Wait()
+
+	// Check results
+	if !success {
+		t.Error("Dequeue should have succeeded")
 	}
+	if result != 123 {
+		t.Errorf("expected 123, got %v", result)
+	}
+}
 
-	// Queue with item should not be empty
+func TestDequeueWithClose(t *testing.T) {
+	q := NewQueue(1)
+
+	// Start a goroutine that will wait for an item
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	var result interface{}
+	var success bool
+
+	go func() {
+		defer wg.Done()
+		// This should block until the queue is closed
+		result, success = q.Dequeue()
+	}()
+
+	// Give the goroutine time to start waiting
+	time.Sleep(50 * time.Millisecond)
+
+	// Close the queue
+	q.Close()
+
+	// Wait for the goroutine to receive the signal
+	wg.Wait()
+
+	// Check results
+	if success {
+		t.Error("Dequeue should have failed on closed queue")
+	}
+	if result != nil {
+		t.Errorf("expected nil, got %v", result)
+	}
+}
+
+func TestClose(t *testing.T) {
+	q := NewQueue(10)
+
+	// Enqueue an item
 	q.Enqueue(1)
-	if q.IsEmpty() {
-		t.Error("queue with item should not be empty")
+
+	// Close the queue
+	q.Close()
+
+	// Should still be able to dequeue existing items
+	value, ok := q.Dequeue()
+	if !ok {
+		t.Error("Should be able to dequeue existing items after close")
+	}
+	if value != 1 {
+		t.Errorf("Expected 1, got %v", value)
 	}
 
-	// Queue should be empty after removing the item
-	q.Dequeue()
-	if !q.IsEmpty() {
-		t.Error("queue should be empty after removing all items")
+	// Cannot enqueue after close
+	success := q.Enqueue(2)
+	if success {
+		t.Error("Should not be able to enqueue after close")
+	}
+
+	// TryEnqueue should also fail
+	success = q.TryEnqueue(3)
+	if success {
+		t.Error("TryEnqueue should fail after close")
+	}
+
+	// Dequeue should now return false (queue empty and closed)
+	_, ok = q.Dequeue()
+	if ok {
+		t.Error("Dequeue should return false when queue is empty and closed")
+	}
+
+	// Verify the queue is marked as closed
+	if !q.IsClosed() {
+		t.Error("IsClosed should return true for closed queue")
 	}
 }
 
-func TestMultipleEnqueueDequeue(t *testing.T) {
-	q := NewTwoLockQueue()
-	items := []int{1, 2, 3, 4, 5}
+func TestProcess(t *testing.T) {
+	q := NewQueue(10)
 
-	// Enqueue items
-	for _, item := range items {
-		q.Enqueue(item)
+	processed := make([]int, 0, 5)
+	var processMutex sync.Mutex
+
+	// Start processing
+	done := q.Process(func(item interface{}) error {
+		val := item.(int)
+		processMutex.Lock()
+		processed = append(processed, val)
+		processMutex.Unlock()
+		return nil
+	})
+
+	// Add items
+	for i := 1; i <= 5; i++ {
+		q.Enqueue(i)
 	}
 
-	// Dequeue items and check order
-	for _, expected := range items {
-		value, ok := q.Dequeue()
-		if !ok {
-			t.Fatalf("dequeue failed, expected more items")
-		}
-		if value != expected {
-			t.Errorf("expected %v, got %v", expected, value)
-		}
+	// Wait a bit for processing
+	time.Sleep(100 * time.Millisecond)
+
+	// Close queue and wait for processor to finish
+	q.Close()
+	<-done
+
+	// Check results
+	processMutex.Lock()
+	defer processMutex.Unlock()
+
+	if len(processed) != 5 {
+		t.Errorf("expected 5 processed items, got %d", len(processed))
 	}
 
-	// Queue should be empty
-	if !q.IsEmpty() {
-		t.Error("queue should be empty after dequeueing all items")
+	// Check order
+	for i := 0; i < len(processed); i++ {
+		if processed[i] != i+1 {
+			t.Errorf("wrong processing order: item %d should be %d, got %d", i, i+1, processed[i])
+		}
 	}
 }
 
 func TestConcurrentEnqueueDequeue(t *testing.T) {
-	q := NewTwoLockQueue()
+	q := NewQueue(1000)
 	const numProducers = 4
 	const numConsumers = 4
-	const itemsPerProducer = 1000
+	const itemsPerProducer = 100
 
 	// Channel to collect all dequeued items
-	results := make(chan interface{}, numProducers*itemsPerProducer)
-
-	// Wait group to synchronize all goroutines
-	var wg sync.WaitGroup
-
-	// Start producers
-	for p := 0; p < numProducers; p++ {
-		wg.Add(1)
-		go func(producerID int) {
-			defer wg.Done()
-			for i := 0; i < itemsPerProducer; i++ {
-				// Create unique values with producer ID and item number
-				value := fmt.Sprintf("p%d-i%d", producerID, i)
-				q.Enqueue(value)
-			}
-		}(p)
-	}
-
-	// Give producers a head start
-	time.Sleep(10 * time.Millisecond)
-
-	// Track how many items were successfully dequeued
-	var dequeued int64
+	results := make(chan int, numProducers*itemsPerProducer)
 
 	// Start consumers
-	for c := 0; c < numConsumers; c++ {
-		wg.Add(1)
+	var wg sync.WaitGroup
+	wg.Add(numConsumers)
+	for i := 0; i < numConsumers; i++ {
 		go func() {
 			defer wg.Done()
 			for {
-				value, ok := q.Dequeue()
+				item, ok := q.Dequeue()
 				if !ok {
-					// No item available, check if producers are done
-					if dequeued >= int64(numProducers*itemsPerProducer) {
-						return
-					}
-					// Wait a bit and try again
-					time.Sleep(time.Millisecond)
-					continue
+					return // Queue closed
 				}
-
-				// Successfully dequeued an item
-				results <- value
-				dequeued++
-
-				// Check if we're done
-				if dequeued >= int64(numProducers*itemsPerProducer) {
-					return
-				}
+				results <- item.(int)
 			}
 		}()
 	}
 
-	// Wait for all goroutines to finish
+	// Start producers
+	var producerWg sync.WaitGroup
+	producerWg.Add(numProducers)
+	for p := 0; p < numProducers; p++ {
+		go func(producerID int) {
+			defer producerWg.Done()
+			base := producerID * itemsPerProducer
+			for i := 0; i < itemsPerProducer; i++ {
+				success := q.Enqueue(base + i)
+				if !success {
+					t.Errorf("Enqueue failed for item %d", base+i)
+				}
+				// Add small delay to reduce contention
+				if i%10 == 0 {
+					time.Sleep(time.Microsecond)
+				}
+			}
+		}(p)
+	}
+
+	// Wait for producers to finish
+	producerWg.Wait()
+
+	// Close the queue to signal consumers to stop
+	q.Close()
+
+	// Wait for consumers to finish
 	wg.Wait()
 	close(results)
 
-	// Count results
-	count := 0
-	for range results {
-		count++
+	// Count the results
+	seen := make(map[int]bool)
+	for item := range results {
+		seen[item] = true
 	}
 
-	// Ensure we got all items
-	if count != numProducers*itemsPerProducer {
-		t.Errorf("expected %d items, got %d", numProducers*itemsPerProducer, count)
+	// Verify all items were processed
+	if len(seen) != numProducers*itemsPerProducer {
+		t.Errorf("expected %d unique items, got %d", numProducers*itemsPerProducer, len(seen))
+	}
+
+	// Verify each expected item was seen
+	for p := 0; p < numProducers; p++ {
+		base := p * itemsPerProducer
+		for i := 0; i < itemsPerProducer; i++ {
+			if !seen[base+i] {
+				t.Errorf("item %d was not processed", base+i)
+				// Only report a few missing items to avoid flooding the output
+				if len(seen) < numProducers*itemsPerProducer-10 {
+					break
+				}
+			}
+		}
 	}
 }
 
-func TestConcurrentPeekEnqueueDequeue(t *testing.T) {
-	q := NewTwoLockQueue()
+func TestResourceQueueManager(t *testing.T) {
+	manager := NewResourceQueueManager()
 
-	// Add initial item
-	q.Enqueue("initial")
+	// Get queues for different resources
+	q1 := manager.GetOrCreateQueue("app1", "resource1", 10)
+	q2 := manager.GetOrCreateQueue("app1", "resource2", 10)
+	q3 := manager.GetOrCreateQueue("app2", "resource1", 10)
 
-	// Parallel operations
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	// Goroutine 1: Peek repeatedly
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 100; i++ {
-			value, ok := q.Peek()
-			if ok && value == nil {
-				t.Error("peek returned nil for non-empty queue")
-			}
-			time.Sleep(time.Millisecond)
-		}
-	}()
-
-	// Goroutine 2: Enqueue items
-	go func() {
-		defer wg.Done()
-		for i := range 100 {
-			q.Enqueue(i)
-			time.Sleep(time.Millisecond)
-		}
-	}()
-
-	// Goroutine 3: Dequeue items
-	go func() {
-		defer wg.Done()
-		for range 50 { // Dequeue fewer items than enqueued
-			q.Dequeue()
-			time.Sleep(2 * time.Millisecond)
-		}
-	}()
-
-	wg.Wait()
-
-	// Queue should not be empty
-	if q.IsEmpty() {
-		t.Error("queue should not be empty after concurrent operations")
+	// Should get the same queue instance for the same app/resource
+	q1Again := manager.GetOrCreateQueue("app1", "resource1", 10)
+	if q1 != q1Again {
+		t.Error("GetOrCreateQueue should return the same queue instance for the same app/resource")
 	}
 
-	// Dequeue remaining items
-	count := 0
-	for {
-		_, ok := q.Dequeue()
-		if !ok {
-			break
-		}
-		count++
+	// Different resources should get different queues
+	if q1 == q2 || q1 == q3 || q2 == q3 {
+		t.Error("different resources should get different queue instances")
 	}
 
-	// Should have dequeued at least some items
-	if count == 0 {
-		t.Error("expected to dequeue remaining items")
+	// Test enqueueing to specific queues
+	q1.Enqueue("item1")
+	q2.Enqueue("item2")
+	q3.Enqueue("item3")
+
+	// Check that items went to the right queues
+	item1, ok1 := q1.Dequeue()
+	item2, ok2 := q2.Dequeue()
+	item3, ok3 := q3.Dequeue()
+
+	if !ok1 || item1 != "item1" {
+		t.Errorf("expected 'item1', got %v (ok=%v)", item1, ok1)
+	}
+	if !ok2 || item2 != "item2" {
+		t.Errorf("expected 'item2', got %v (ok=%v)", item2, ok2)
+	}
+	if !ok3 || item3 != "item3" {
+		t.Errorf("expected 'item3', got %v (ok=%v)", item3, ok3)
+	}
+
+	// Test getting a queue
+	q1ByGet := manager.GetQueue("app1", "resource1")
+	if q1ByGet != q1 {
+		t.Error("GetQueue should return the same queue as GetOrCreateQueue")
+	}
+
+	// Test closing a specific queue
+	manager.CloseQueue("app1", "resource1")
+
+	// The queue should be closed
+	if !q1.IsClosed() {
+		t.Error("Queue should be closed after CloseQueue")
+	}
+
+	success := q1.Enqueue("should fail")
+	if success {
+		t.Error("Enqueue should fail on closed queue")
+	}
+
+	// Other queues should still be open
+	if q2.IsClosed() {
+		t.Error("Other queues should not be closed")
+	}
+
+	success = q2.Enqueue("should succeed")
+	if !success {
+		t.Error("Enqueue should succeed on other queues")
+	}
+
+	// Test closing all queues
+	manager.Close()
+
+	// All queues should be closed
+	if !q1.IsClosed() || !q2.IsClosed() || !q3.IsClosed() {
+		t.Error("All queues should be closed after Close")
+	}
+
+	// After closing the manager, GetOrCreateQueue should return nil
+	q4 := manager.GetOrCreateQueue("app3", "resource1", 10)
+	if q4 != nil {
+		t.Error("GetOrCreateQueue should return nil after manager is closed")
 	}
 }

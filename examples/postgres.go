@@ -21,7 +21,7 @@ This resource allows you to create a new PostgreSQL database.
 `
 const pgdbResourceSchema = `
 {
-	"$schema": "https://developer.tempestdx.com/schema/v1/tempest-app-schema.json",
+	"$schema": "https://developer.tempestdx.com/schema/v1/tempest-properties-schema.json",
 	"type": "object",
 	"properties": {
 		"name": {
@@ -173,7 +173,7 @@ func main() {
 
 	// Create and configure the agent using the new functional options pattern
 	// This will automatically use environment variables if set, or use these explicitly provided options
-	agentInstance := agent.New(
+	agentInstance, err := agent.New(
 		// Specify server address explicitly
 		agent.WithServerAddr(":8080"),
 
@@ -196,6 +196,9 @@ func main() {
 			NoTimeout: true,
 		}),
 	)
+	if err != nil {
+		panic(err)
+	}
 
 	// To see how environment variables can be used, you could set:
 	// export TEMPEST_API_KEY="your-api-key"

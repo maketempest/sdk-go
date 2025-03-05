@@ -2,7 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
+
+	"github.com/tempestdx/sdk-go/resource"
 )
 
 // OperationDescription represents an operation in the describe API response
@@ -40,178 +43,206 @@ func (a *agent) registerDescribeHandler() {
 	a.logger.Debug("Registering describe handler", "path", "/describe")
 
 	// Register the handler for the describe route
-	a.mux.HandleFunc("/describe", func(w http.ResponseWriter, r *http.Request) {
-		a.logger.Debug("Handling describe request",
-			"method", r.Method,
-			"remote_addr", r.RemoteAddr)
+	a.mux.HandleFunc("/describe", a.handleDescribeRequest)
+}
 
-		// Only allow GET requests
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
+func (a *agent) handleDescribeRequest(w http.ResponseWriter, r *http.Request) {
+	a.logger.Debug("Handling describe request",
+		"method", r.Method,
+		"remote_addr", r.RemoteAddr)
+
+	// Only allow GET requests
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	response := a.buildDescribeResponse()
+
+	// Set content type and return the JSON response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		a.logger.Error("Failed to encode describe response", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (a *agent) buildDescribeResponse() map[string]AppDescription {
+	response := make(map[string]AppDescription)
+
+	// Gather information from all registered apps
+	for appName, appConfig := range a.apps {
+		appDesc := buildAppDescription(appName, appConfig, a.logger)
+		response[appName] = appDesc
+	}
+
+	return response
+}
+
+// Helper functions that don't need agent access
+
+func buildAppDescription(appName string, appConfig *appConfig, logger *slog.Logger) AppDescription {
+	appDesc := AppDescription{
+		Name:              appName,
+		SupportedVersions: appConfig.SupportedVersions,
+		Resources:         make(map[string]ResourceDescription),
+	}
+
+	// Get resource definitions
+	for _, resourceDef := range appConfig.ResourceDefinitions() {
+		resDesc := buildResourceDescription(resourceDef)
+		appDesc.Resources[resourceDef.UniqueID()] = resDesc
+	}
+
+	// Add canonical bindings
+	if len(appConfig.ResourceCanonicalMap) > 0 {
+		appDesc.CanonicalBindings = marshalCanonicalBindings(appConfig.ResourceCanonicalMap, logger)
+	}
+
+	// Add canonical routes information
+	routes := appConfig.generateCanonicalRoutes()
+	if len(routes) > 0 {
+		appDesc.Routes = marshalData(routes, logger)
+	}
+
+	return appDesc
+}
+
+func buildResourceDescription(resourceDef *resource.Definition) ResourceDescription {
+	resDesc := ResourceDescription{
+		DisplayName:          resourceDef.DisplayName(),
+		UniqueID:             resourceDef.UniqueID(),
+		Operations:           make(map[string]OperationDescription),
+		LifecycleStage:       resourceDef.LifecycleStage().String(),
+		HealthcheckEnabled:   resourceDef.HasHealthCheck(),
+		InstructionsMarkdown: resourceDef.InstructionsMarkdown(),
+	}
+
+	// Process operations
+	for opName, operation := range resourceDef.Operations() {
+		resDesc.Operations[opName] = buildOperationDescription(opName, operation)
+	}
+
+	// Get resource properties schema if available
+	if props := resourceDef.PropertiesSchema(); props != nil {
+		propsJSON, _ := props.Raw.MarshalJSON()
+		resDesc.PropertiesSchema = propsJSON
+	}
+
+	// Get categories
+	if cats := resourceDef.Categories(); len(cats) > 0 {
+		resDesc.Categories = convertCategories(cats)
+	}
+
+	// Get links
+	if links := resourceDef.Links(); len(links) > 0 {
+		resDesc.Links = convertLinks(links)
+	}
+
+	return resDesc
+}
+
+func buildOperationDescription(opName string, operation *resource.Operation) OperationDescription {
+	opDesc := OperationDescription{
+		Name: opName,
+	}
+
+	// Get operation schema if available
+	if operation.Args() != nil {
+		argsJSON, _ := operation.Args().Raw.MarshalJSON()
+		opDesc.Args = argsJSON
+	}
+
+	// Get canonical operations
+	if canonOps := operation.CanonicalOperations(); len(canonOps) > 0 {
+		opDesc.CanonicalBinding = convertCanonicalOperations(canonOps)
+	}
+
+	// Get action config if available
+	if actionConfig := operation.ActionConfig(); actionConfig != nil {
+		opDesc.ActionConfig = map[string]any{
+			"title":                 actionConfig.Title,
+			"description":           actionConfig.Description,
+			"requires_confirmation": actionConfig.RequiresConfirmation,
 		}
+	}
 
-		// Prepare the response structure
-		response := make(map[string]AppDescription)
+	return opDesc
+}
 
-		// Gather information from all registered apps
-		for appName, appConfig := range a.apps {
-			appDesc := AppDescription{
-				Name:              appName,
-				SupportedVersions: appConfig.SupportedVersions,
-				Resources:         make(map[string]ResourceDescription),
-			}
+func convertCanonicalOperations(canonOps []resource.CanonicalOperation) []map[string]interface{} {
+	canonicalBindings := make([]map[string]interface{}, 0, len(canonOps))
+	for _, op := range canonOps {
+		canonicalBindings = append(canonicalBindings, map[string]interface{}{
+			"type":        op.Type.String(),
+			"priority":    op.Priority,
+			"concurrency": op.Concurrency,
+		})
+	}
+	return canonicalBindings
+}
 
-			// Get resource definitions
-			for _, resourceDef := range appConfig.ResourceDefinitions() {
-				resDesc := ResourceDescription{
-					DisplayName: resourceDef.DisplayName(),
-					UniqueID:    resourceDef.UniqueID(),
-					Operations:  make(map[string]OperationDescription),
-				}
+func convertCategories(cats []resource.Category) []string {
+	categories := make([]string, len(cats))
+	for i, cat := range cats {
+		categories[i] = string(cat)
+	}
+	return categories
+}
 
-				// Collect operations
-				for opName, operation := range resourceDef.Operations() {
-					opDesc := OperationDescription{
-						Name: opName,
-					}
-
-					// Get operation schema if available
-					if operation.Args() != nil {
-						argsJSON, _ := operation.Args().Raw.MarshalJSON()
-						opDesc.Args = argsJSON
-					}
-
-					// Get canonical operations
-					if canonOps := operation.CanonicalOperations(); len(canonOps) > 0 {
-						canonicalBindings := make([]map[string]interface{}, 0, len(canonOps))
-						for _, op := range canonOps {
-							canonicalBindings = append(canonicalBindings, map[string]interface{}{
-								"type":        op.Type.String(),
-								"priority":    op.Priority,
-								"concurrency": op.Concurrency,
-							})
-						}
-						opDesc.CanonicalBinding = canonicalBindings
-					}
-
-					// Get action config if available
-					if actionConfig := operation.ActionConfig(); actionConfig != nil {
-						opDesc.ActionConfig = map[string]any{
-							"title":                 actionConfig.Title,
-							"description":           actionConfig.Description,
-							"requires_confirmation": actionConfig.RequiresConfirmation,
-						}
-					}
-
-					resDesc.Operations[opName] = opDesc
-				}
-
-				// Get resource properties schema if available
-				if props := resourceDef.PropertiesSchema(); props != nil {
-					propsJSON, _ := props.Raw.MarshalJSON()
-					resDesc.PropertiesSchema = propsJSON
-				}
-
-				// Get lifecycle stage
-				resDesc.LifecycleStage = resourceDef.LifecycleStage().String()
-
-				// Get categories
-				if cats := resourceDef.Categories(); len(cats) > 0 {
-					categories := make([]string, len(cats))
-					for i, cat := range cats {
-						categories[i] = string(cat)
-					}
-					resDesc.Categories = categories
-				}
-
-				// Get links
-				if links := resourceDef.Links(); len(links) > 0 {
-					linksMaps := make([]map[string]interface{}, len(links))
-					for i, link := range links {
-						linksMaps[i] = map[string]interface{}{
-							"title":    link.Title,
-							"url":      link.URL,
-							"type":     string(link.Type),
-							"category": string(link.Category),
-						}
-					}
-					resDesc.Links = linksMaps
-				}
-
-				// Get instructions
-				resDesc.InstructionsMarkdown = resourceDef.InstructionsMarkdown()
-
-				// Check if healthcheck is enabled
-				resDesc.HealthcheckEnabled = resourceDef.HasHealthCheck()
-
-				// Add the resource description to the app
-				appDesc.Resources[resourceDef.UniqueID()] = resDesc
-			}
-
-			// Add canonical bindings to the app description with proper formatting
-			if len(appConfig.CanonicalBindings) > 0 {
-				// Create a JSON-friendly structure with string keys for canonical types
-				jsonBindings := make(map[string]map[string][]jsonCanonicalBinding)
-
-				for resName, typeBindings := range appConfig.CanonicalBindings {
-					jsonBindings[string(resName)] = make(map[string][]jsonCanonicalBinding)
-
-					for canonType, bindings := range typeBindings {
-						// Convert canonical type enum to string
-						canonTypeStr := canonType.String()
-
-						// Convert bindings to JSON-friendly format
-						jsonBindingsList := make([]jsonCanonicalBinding, 0, len(bindings))
-						for _, binding := range bindings {
-							jsonOps := make([]jsonOperationMetadata, 0, len(binding.Operations))
-							for _, op := range binding.Operations {
-								jsonOps = append(jsonOps, jsonOperationMetadata{
-									Name:        op.Name,
-									Priority:    op.Priority,
-									Concurrency: op.Concurrency,
-								})
-							}
-							jsonBindingsList = append(jsonBindingsList, jsonCanonicalBinding{
-								Operations: jsonOps,
-							})
-						}
-
-						jsonBindings[string(resName)][canonTypeStr] = jsonBindingsList
-					}
-				}
-
-				// Convert to JSON
-				canonicalBindingsJSON, err := json.Marshal(jsonBindings)
-				if err != nil {
-					a.logger.Error("Failed to marshal canonical bindings", "error", err)
-				} else {
-					appDesc.CanonicalBindings = canonicalBindingsJSON
-				}
-			}
-
-			// Also add canonical routes information
-			routes := appConfig.generateCanonicalRoutes()
-			if len(routes) > 0 {
-				routesJSON, err := json.Marshal(routes)
-				if err != nil {
-					a.logger.Error("Failed to marshal canonical routes", "error", err)
-				} else {
-					// You might need to add a field for routes to AppDescription
-					// For now we can add it to the existing canonical bindings data
-					appDesc.Routes = routesJSON // This would require adding a Routes field to AppDescription
-				}
-			}
-
-			// Add the app description to the response
-			response[appName] = appDesc
+func convertLinks(links []resource.Link) []map[string]interface{} {
+	linksMaps := make([]map[string]interface{}, len(links))
+	for i, link := range links {
+		linksMaps[i] = map[string]interface{}{
+			"title":    link.Title,
+			"url":      link.URL,
+			"type":     string(link.Type),
+			"category": string(link.Category),
 		}
+	}
+	return linksMaps
+}
 
-		// Set content type and return the JSON response
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			a.logger.Error("Failed to encode describe response", "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+func marshalCanonicalBindings(bindings resourceCanonicalBindings, logger *slog.Logger) json.RawMessage {
+	// Create a JSON-friendly structure with string keys for canonical types
+	jsonBindings := make(map[string]map[string][]jsonCanonicalBinding)
+
+	for resName, typeBindings := range bindings {
+		jsonBindings[string(resName)] = make(map[string][]jsonCanonicalBinding)
+
+		for canonType, bindingsList := range typeBindings {
+			// Convert canonical type enum to string
+			canonTypeStr := canonType.String()
+
+			// Convert bindings to JSON-friendly format
+			jsonBindingsList := make([]jsonCanonicalBinding, 0, len(bindingsList))
+			for _, binding := range bindingsList {
+				jsonOps := make([]jsonOperationMetadata, 0, len(binding.Operations))
+				for _, op := range binding.Operations {
+					jsonOps = append(jsonOps, jsonOperationMetadata{
+						Name:        op.Name,
+						Priority:    op.Priority,
+						Concurrency: op.Concurrency,
+					})
+				}
+				jsonBindingsList = append(jsonBindingsList, jsonCanonicalBinding{
+					Operations: jsonOps,
+				})
+			}
+
+			jsonBindings[string(resName)][canonTypeStr] = jsonBindingsList
 		}
-	})
+	}
+
+	return marshalData(jsonBindings, logger)
+}
+
+// Generic helper for marshaling data to JSON
+func marshalData(data interface{}, logger *slog.Logger) json.RawMessage {
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		logger.Error("Failed to marshal data", "error", err)
+		return nil
+	}
+	return bytes
 }

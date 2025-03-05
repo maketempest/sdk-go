@@ -333,14 +333,14 @@ func TestResourceQueueManager(t *testing.T) {
 	manager := NewResourceQueueManager()
 
 	// Get queues for different resources
-	q1 := manager.GetOrCreateQueue("app1", "resource1", 10)
-	q2 := manager.GetOrCreateQueue("app1", "resource2", 10)
-	q3 := manager.GetOrCreateQueue("app2", "resource1", 10)
+	q1 := manager.GetOrCreateQueue("app1", "v1", "resource1", 10)
+	q2 := manager.GetOrCreateQueue("app1", "v1", "resource2", 10)
+	q3 := manager.GetOrCreateQueue("app2", "v1", "resource1", 10)
 
-	// Should get the same queue instance for the same app/resource
-	q1Again := manager.GetOrCreateQueue("app1", "resource1", 10)
+	// Should get the same queue instance for the same app/version/resource
+	q1Again := manager.GetOrCreateQueue("app1", "v1", "resource1", 10)
 	if q1 != q1Again {
-		t.Error("GetOrCreateQueue should return the same queue instance for the same app/resource")
+		t.Error("GetOrCreateQueue should return the same queue instance for the same app/version/resource")
 	}
 
 	// Different resources should get different queues
@@ -369,13 +369,13 @@ func TestResourceQueueManager(t *testing.T) {
 	}
 
 	// Test getting a queue
-	q1ByGet := manager.GetQueue("app1", "resource1")
+	q1ByGet := manager.GetQueue("app1", "v1", "resource1")
 	if q1ByGet != q1 {
 		t.Error("GetQueue should return the same queue as GetOrCreateQueue")
 	}
 
 	// Test closing a specific queue
-	manager.CloseQueue("app1", "resource1")
+	manager.CloseQueue("app1", "v1", "resource1")
 
 	// The queue should be closed
 	if !q1.IsClosed() {
@@ -406,7 +406,7 @@ func TestResourceQueueManager(t *testing.T) {
 	}
 
 	// After closing the manager, GetOrCreateQueue should return nil
-	q4 := manager.GetOrCreateQueue("app3", "resource1", 10)
+	q4 := manager.GetOrCreateQueue("app3", "v1", "resource1", 10)
 	if q4 != nil {
 		t.Error("GetOrCreateQueue should return nil after manager is closed")
 	}

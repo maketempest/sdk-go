@@ -189,8 +189,8 @@ func NewResourceQueueManager() *ResourceQueueManager {
 
 // GetOrCreateQueue gets an existing queue or creates a new one if it doesn't exist.
 // If the manager is closed, this returns nil.
-func (m *ResourceQueueManager) GetOrCreateQueue(appName, resourceID string, capacity int) *Queue {
-	key := appName + "/" + resourceID
+func (m *ResourceQueueManager) GetOrCreateQueue(appName, version, resourceID string, capacity int) *Queue {
+	key := appName + "/" + version + "/" + resourceID
 
 	// Try read-only first for performance
 	m.mutex.RLock()
@@ -227,8 +227,8 @@ func (m *ResourceQueueManager) GetOrCreateQueue(appName, resourceID string, capa
 }
 
 // GetQueue gets an existing queue, or returns nil if it doesn't exist.
-func (m *ResourceQueueManager) GetQueue(appName, resourceID string) *Queue {
-	key := appName + "/" + resourceID
+func (m *ResourceQueueManager) GetQueue(appName, version, resourceID string) *Queue {
+	key := appName + "/" + version + "/" + resourceID
 
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
@@ -256,8 +256,8 @@ func (m *ResourceQueueManager) Close() {
 }
 
 // CloseQueue closes a specific queue managed by this manager.
-func (m *ResourceQueueManager) CloseQueue(appName, resourceID string) {
-	key := appName + "/" + resourceID
+func (m *ResourceQueueManager) CloseQueue(appName, version, resourceID string) {
+	key := appName + "/" + version + "/" + resourceID
 
 	m.mutex.RLock()
 	q, exists := m.queues[key]

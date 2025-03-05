@@ -18,7 +18,7 @@ type resourceStatefulMetadata struct {
 	appID          string
 }
 
-type ResourceDefinition struct {
+type Definition struct {
 	// The display name of your resouce
 	displayName string
 	// The unique ID of your resource, if not specified, your display name will be slugified
@@ -36,15 +36,15 @@ type ResourceDefinition struct {
 	publishedState *resourceStatefulMetadata
 }
 
-func (r *ResourceDefinition) UniqueID() string {
+func (r *Definition) UniqueID() string {
 	return r.uniqueID
 }
 
-func (r *ResourceDefinition) DisplayName() string {
+func (r *Definition) DisplayName() string {
 	return r.displayName
 }
 
-func (r *ResourceDefinition) Operations() map[string]*Operation {
+func (r *Definition) Operations() map[string]*Operation {
 	// returns a copy of the operations
 	operationsCopy := make(map[string]*Operation, len(r.operations))
 	maps.Copy(operationsCopy, r.operations)
@@ -60,8 +60,8 @@ type DefinitionConfig struct {
 }
 
 // New creates a new V2 resource
-func NewDefinition(config DefinitionConfig, opts ...resourceDefinitionOption) (*ResourceDefinition, error) {
-	r := &ResourceDefinition{
+func NewDefinition(config DefinitionConfig, opts ...resourceDefinitionOption) (*Definition, error) {
+	r := &Definition{
 		displayName:    config.DisplayName,
 		uniqueID:       config.UniqueID,
 		lifecycleStage: config.LifecycleStage,
@@ -116,41 +116,41 @@ func NewDefinition(config DefinitionConfig, opts ...resourceDefinitionOption) (*
 	return r, nil
 }
 
-type resourceDefinitionOption func(*ResourceDefinition)
+type resourceDefinitionOption func(*Definition)
 
 func WithDefaultLinks(links ...Link) resourceDefinitionOption {
 	// Validate links
-	return func(r *ResourceDefinition) {
+	return func(r *Definition) {
 		r.links = links
 	}
 }
 
 func WithInstructions(markdown string) resourceDefinitionOption {
-	return func(r *ResourceDefinition) {
+	return func(r *Definition) {
 		r.instructionsMarkdown = markdown
 	}
 }
 
 func WithHealthCheck(fn HealthCheckFunc) resourceDefinitionOption {
-	return func(r *ResourceDefinition) {
+	return func(r *Definition) {
 		r.healthCheck = fn
 	}
 }
 
 func WithCategories(categories ...Category) resourceDefinitionOption {
-	return func(r *ResourceDefinition) {
+	return func(r *Definition) {
 		r.categories = categories
 	}
 }
 
-func (r *ResourceDefinition) RegisterOperation(name string, fn OperationFunc, opts ...operationOption) *ResourceDefinition {
+func (r *Definition) RegisterOperation(name string, fn OperationFunc, opts ...operationOption) *Definition {
 	op := NewOperation(name, fn, opts...)
 	r.operations[name] = op
 	return r
 }
 
 // JSON returns the JSON representation of the ResourceDefinition
-func (r *ResourceDefinition) JSON() ([]byte, error) {
+func (r *Definition) JSON() ([]byte, error) {
 	data := map[string]any{
 		"displayName":    r.displayName,
 		"uniqueID":       r.uniqueID,
@@ -207,37 +207,37 @@ func (r *ResourceDefinition) JSON() ([]byte, error) {
 }
 
 // GetOperation returns the operation with the given name.
-func (r *ResourceDefinition) GetOperation(name string) (*Operation, bool) {
+func (r *Definition) GetOperation(name string) (*Operation, bool) {
 	op, ok := r.Operations()[name]
 	return op, ok
 }
 
 // PropertiesSchema returns the properties schema for the resource
-func (r *ResourceDefinition) PropertiesSchema() *jsonschema.Schema {
+func (r *Definition) PropertiesSchema() *jsonschema.Schema {
 	return r.properties
 }
 
 // LifecycleStage returns the lifecycle stage of the resource
-func (r *ResourceDefinition) LifecycleStage() LifecycleStage {
+func (r *Definition) LifecycleStage() LifecycleStage {
 	return r.lifecycleStage
 }
 
 // Categories returns the categories of the resource
-func (r *ResourceDefinition) Categories() []Category {
+func (r *Definition) Categories() []Category {
 	return r.categories
 }
 
 // Links returns the links associated with the resource
-func (r *ResourceDefinition) Links() []Link {
+func (r *Definition) Links() []Link {
 	return r.links
 }
 
 // InstructionsMarkdown returns the instructions for the resource
-func (r *ResourceDefinition) InstructionsMarkdown() string {
+func (r *Definition) InstructionsMarkdown() string {
 	return r.instructionsMarkdown
 }
 
 // HasHealthCheck returns true if the resource has a health check
-func (r *ResourceDefinition) HasHealthCheck() bool {
+func (r *Definition) HasHealthCheck() bool {
 	return r.healthCheck != nil
 }

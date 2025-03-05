@@ -16,7 +16,8 @@ type CanonicalType int
 
 // TODO: cleanup and deduplicate canonical operations
 const (
-	Install CanonicalType = iota
+	Unknown CanonicalType = iota
+	Install
 	Uninstall
 	Create
 	Read
@@ -36,6 +37,8 @@ const (
 // String returns the string representation of a CanonicalType
 func (ct CanonicalType) String() string {
 	switch ct {
+	case Unknown:
+		return "unknown"
 	case Install:
 		return "install"
 	case Uninstall:
@@ -67,7 +70,7 @@ func (ct CanonicalType) String() string {
 	case Sync:
 		return "sync"
 	default:
-		return ""
+		return "unknown"
 	}
 }
 
@@ -126,21 +129,14 @@ func StringToCanonicalType(s string) (CanonicalType, bool) {
 	case "sync":
 		return Sync, true
 	default:
-		return 0, false
+		return Unknown, false
 	}
 }
 
-func (r *ResourceDefinition) Install(fn OperationFunc) {
+func (r *Definition) Install(fn OperationFunc) {
 	r.RegisterOperation("_install", fn, Op.On(CanonicalOperation{Type: Install}))
 }
 
-func (r *ResourceDefinition) Create(fn OperationFunc) {
+func (r *Definition) Create(fn OperationFunc) {
 	r.RegisterOperation("_create", fn, Op.On(CanonicalOperation{Type: Create}))
-}
-
-// ... other methods
-func ExecuteOperation() {
-
-	// Route to appropriate operation
-
 }

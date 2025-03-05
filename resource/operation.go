@@ -25,7 +25,7 @@ type EnvironmentVariable struct {
 
 // OperationRequest contains the input data for an operation on a resource.
 type OperationRequest struct {
-	ResourceDefinition *ResourceDefinition
+	Definition *Definition
 	// Metadata contains information about the Project and User making the request.
 	// This metadata does not contain information about the Resource being operated on.
 	Metadata *Metadata

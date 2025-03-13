@@ -23,6 +23,12 @@ type EnvironmentVariable struct {
 	Type  EnvironmentVariableType
 }
 
+// PaginationRequest contains pagination parameters for list operations
+type PaginationRequest struct {
+	Cursor string `json:"cursor,omitempty"`
+	PageSize int `json:"pageSize"`
+}
+
 // OperationRequest contains the input data for an operation on a resource.
 type OperationRequest struct {
 	Definition *Definition
@@ -37,18 +43,52 @@ type OperationRequest struct {
 	Args map[string]any
 	// Environment contains the environment variables that are available to the operation.
 	Environment map[string]EnvironmentVariable
+	// Pagination contains pagination parameters for list operations
+	Pagination *PaginationRequest `json:"pagination,omitempty"`
 }
 
-// OperationResponse contains the output data for an operation on a resource.
+// Update OperationResponse to use this interface
 type OperationResponse struct {
-	// Resource contains the properties of the resource after the operation has been performed.
-	Resource *Resource
+	// Data can be a single resource or a slice of resources
+	Data ResponseData `json:"data,omitempty"`
 	// Error is the error that occurred during the operation, if any.
-	Error error
+	Error error `json:"error,omitempty"`
 	// Message is the message of the operation.
-	Message string
-	// ResultProperties contains the properties of the resource after the operation has been performed.
-	ResultProperties map[string]any
+	Message string `json:"message,omitempty"`
+}
+
+// NewSingleResourceResponse creates an operation response for a single resource.
+func NewSingleResourceResponse(resource *Resource, message string, err error) *OperationResponse {
+	return &OperationResponse{
+		Data:    resource,
+		Message: message,
+		Error:   err,
+	}
+}
+
+// NewResourceListResponse creates an operation response for a list of resources with pagination.
+func NewResourceListResponse(resources []*Resource, totalCount, pageSize int, nextCursor, prevCursor, message string, err error) *OperationResponse {
+	var collection *ResourceCollection
+	if resources != nil {
+		hasMore := nextCursor != ""
+
+		collection = &ResourceCollection{
+			Items: resources,
+			Pagination: &Pagination{
+				TotalCount: totalCount,
+				PageSize:   pageSize,
+				HasMore:    hasMore,
+				NextCursor: nextCursor,
+				PrevCursor: prevCursor,
+			},
+		}
+	}
+
+	return &OperationResponse{
+		Data:    collection,
+		Message: message,
+		Error:   err,
+	}
 }
 
 type OperationFunc func(ctx context.Context, req *OperationRequest) (*OperationResponse, error)
@@ -186,7 +226,7 @@ func (o *Operation) JSON() ([]byte, error) {
 	}
 
 	if o.actionConfig != nil {
-		data["actionConfig"] = map[string]interface{}{
+		data["actionConfig"] = map[string]any{
 			"title":                o.actionConfig.Title,
 			"description":          o.actionConfig.Description,
 			"requiresConfirmation": o.actionConfig.RequiresConfirmation,
@@ -194,9 +234,9 @@ func (o *Operation) JSON() ([]byte, error) {
 	}
 
 	if len(o.canonicalOps) > 0 {
-		canonicalOps := make([]map[string]interface{}, len(o.canonicalOps))
+		canonicalOps := make([]map[string]any, len(o.canonicalOps))
 		for i, op := range o.canonicalOps {
-			canonicalOps[i] = map[string]interface{}{
+			canonicalOps[i] = map[string]any{
 				"type":        op.Type,
 				"priority":    op.Priority,
 				"concurrency": op.Concurrency,

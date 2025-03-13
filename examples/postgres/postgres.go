@@ -66,9 +66,7 @@ func pgdbHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, error)
 func pgdbCreatePrepare(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
 	fmt.Println("[Priority 100] Preparing to create PostgreSQL database...")
 	fmt.Println(req.Args["name"])
-	return &resource.OperationResponse{
-		Resource: req.Resource,
-	}, nil
+	return resource.NewSingleResourceResponse(req.Resource, "Operation completed successfully", nil), nil
 }
 
 // Second create operation with priority 100 (will run after the first one due to registration order)
@@ -76,9 +74,7 @@ func pgdbCreateValidate(ctx context.Context, req *resource.OperationRequest) (*r
 	fmt.Println("[Priority 100] Validating PostgreSQL database parameters...")
 	fmt.Println(req.Args["name"])
 
-	return &resource.OperationResponse{
-		Resource: req.Resource,
-	}, nil
+	return resource.NewSingleResourceResponse(req.Resource, "Operation completed successfully", nil), nil
 }
 
 // Main create operation with priority 200 (will run last)
@@ -86,10 +82,7 @@ func pgdbCreate(ctx context.Context, req *resource.OperationRequest) (*resource.
 	fmt.Println("[Priority 200] Creating PostgreSQL database...")
 
 	fmt.Println(req.Args["name"])
-
-	return &resource.OperationResponse{
-		Resource: req.Resource,
-	}, nil
+	return resource.NewSingleResourceResponse(req.Resource, "Operation completed successfully", nil), nil
 }
 
 func main() {

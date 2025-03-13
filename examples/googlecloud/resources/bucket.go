@@ -90,49 +90,67 @@ func createBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 	}
 
 	return &resource.OperationResponse{
-		Resource: bucketToResource(createdBucket),
+		Data: bucketToResource(createdBucket),
 	}, nil
 }
 
-// func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-// 	opt, err := getAuthOption()
-// 	if err != nil {
-// 		return nil, fmt.Errorf("create auth option: %w", err)
-// 	}
+func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
+	opt, err := getAuthOption()
+	if err != nil {
+		return nil, fmt.Errorf("create auth option: %w", err)
+	}
 
-// 	service, err := storage.NewService(ctx, opt)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("create service: %w", err)
-// 	}
+	service, err := storage.NewService(ctx, opt)
+	if err != nil {
+		return nil, fmt.Errorf("create service: %w", err)
+	}
 
-// 	serviceReq := service.Buckets.List(projectID)
+	serviceReq := service.Buckets.List(projectID)
 
-// 	// OPERATION REQUEST DOES NOT HANDLE PAGINATION
-// 	if req.NextToken != "" {
-// 		serviceReq.PageToken(req.NextToken)
-// 	}
+	pageSize := 50
 
-// 	buckets, err := serviceReq.Context(ctx).Do()
-// 	if err != nil {
-// 		return nil, fmt.Errorf("list buckets: %w", err)
-// 	}
+	if req.Pagination != nil {
+		if req.Pagination.PageSize > 0 {
+			pageSize = req.Pagination.PageSize
+		}
+		if req.Pagination.Cursor != "" {
+			serviceReq.PageToken(req.Pagination.Cursor)
+		}
+	}
 
-// 	var items []*resource.Resource
-// 	for _, i := range buckets.Items {
-// 		items = append(items, bucketToResource(i))
-// 	}
+	// Set max results based on page size
+	serviceReq.MaxResults(int64(pageSize))
 
-// 	// OPERATION RESPONSE CONTAINS A SINGLE RESOURCE
-// 	out := &resource.OperationResponse{
-// 		Resource: items,
-// 	}
+	buckets, err := serviceReq.Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("list buckets: %w", err)
+	}
 
-// 	if buckets.NextPageToken != "" {
-// 		out.NextToken = buckets.NextPageToken
-// 	}
+	// Convert bucket items to resources
+	var items []*resource.Resource
+	for _, i := range buckets.Items {
+		items = append(items, bucketToResource(i))
+	}
 
-// 	return out, nil
-// }
+	totalCount := len(items)
+	if buckets.NextPageToken != "" {
+		totalCount = len(items) + 1
+	}
+
+	nextCursor := buckets.NextPageToken
+
+	prevCursor := ""
+
+	return resource.NewResourceListResponse(
+		items,
+		totalCount,
+		pageSize,
+		nextCursor,
+		prevCursor,
+		fmt.Sprintf("Found %d buckets", len(items)),
+		nil,
+	), nil
+}
 
 func readBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
 	opt, err := getAuthOption()
@@ -151,7 +169,7 @@ func readBucket(ctx context.Context, req *resource.OperationRequest) (*resource.
 	}
 
 	return &resource.OperationResponse{
-		Resource: bucketToResource(bucket),
+		Data: bucketToResource(bucket),
 	}, nil
 }
 
@@ -188,7 +206,7 @@ func deleteBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 	}
 
 	return &resource.OperationResponse{
-		Resource: req.Resource,
+		Data: req.Resource,
 	}, nil
 }
 
@@ -235,16 +253,15 @@ func NewBucketDefinition() (*resource.Definition, error) {
 		}),
 	)
 
-	// TODO: How to handle list operation when operation response assumes a resource is single object?
-	// bucketDef.RegisterOperation(
-	// 	"list",
-	// 	listBuckets,
-	// 	resource.Op.On(resource.CanonicalOperation{
-	// 		Type:        resource.List,
-	// 		Priority:    100,
-	// 		Concurrency: 1,
-	// 	}),
-	// )
+	bucketDef.RegisterOperation(
+		"list",
+		listBuckets,
+		resource.Op.On(resource.CanonicalOperation{
+			Type:        resource.List,
+			Priority:    100,
+			Concurrency: 1,
+		}),
+	)
 
 	bucketDef.RegisterOperation(
 		"read",

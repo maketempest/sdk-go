@@ -567,8 +567,8 @@ func (a *agent) registerHandler(handlerType string, appName, version, resourceID
 			result.Message = fmt.Sprintf("Canonical operation %s completed successfully", operationName)
 
 			// Extract output if available
-			if resp != nil && resp.Resource != nil {
-				result.Output = resp.Resource.Properties
+			if resp != nil && resp.Data != nil {
+				result.Output = extractOutputFromResponseData(resp.Data)
 			}
 
 			// Add result to reporting queue
@@ -693,8 +693,8 @@ func (h *operationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	result.Message = fmt.Sprintf("Operation %s completed successfully", h.operationName)
 
 	// Extract output if available
-	if resp != nil && resp.Resource != nil {
-		result.Output = resp.Resource.Properties
+	if resp != nil && resp.Data != nil {
+		result.Output = extractOutputFromResponseData(resp.Data)
 	}
 
 	requestLogger.Info("Operation completed successfully",
@@ -828,8 +828,8 @@ func (a *agent) executeCanonicalOperation(
 			opMeta.Name, canonicalTypeStr)
 
 		// Extract output if available
-		if resp != nil && resp.Resource != nil {
-			opResult.Output = resp.Resource.Properties
+		if resp != nil && resp.Data != nil {
+			opResult.Output = extractOutputFromResponseData(resp.Data)
 		}
 
 		a.resultQueue.Enqueue(opResult)
@@ -849,8 +849,8 @@ func (a *agent) executeCanonicalOperation(
 	}
 
 	// Include output from last operation
-	if lastResponse != nil && lastResponse.Resource != nil {
-		finalResult.Output = lastResponse.Resource.Properties
+	if lastResponse != nil && lastResponse.Data != nil {
+		finalResult.Output = extractOutputFromResponseData(lastResponse.Data)
 	}
 
 	a.resultQueue.Enqueue(finalResult)
@@ -1521,4 +1521,47 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 	}
 
 	return result
+}
+
+// Helper function to extract output from response data
+func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
+	output := make(map[string]any)
+
+	if data == nil {
+		return output
+	}
+
+	switch typedData := data.(type) {
+	case *resource.Resource:
+		// For single resources, use its properties directly
+		if typedData.Properties != nil {
+			output = typedData.Properties
+		}
+	default:
+		// Try to handle as a collection
+		if collection, ok := data.(*resource.ResourceCollection); ok && collection != nil {
+			if len(collection.Items) > 0 {
+				// Include first item's properties as base
+				if collection.Items[0].Properties != nil {
+					output = collection.Items[0].Properties
+				}
+
+				// Add collection metadata
+				items := make([]map[string]any, 0, len(collection.Items))
+				for _, item := range collection.Items {
+					if item.Properties != nil {
+						items = append(items, item.Properties)
+					}
+				}
+
+				output["_collection"] = map[string]any{
+					"items":      items,
+					"count":      len(collection.Items),
+					"pagination": collection.Pagination,
+				}
+			}
+		}
+	}
+
+	return output
 }

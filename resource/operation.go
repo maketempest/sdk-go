@@ -47,7 +47,7 @@ type OperationRequest struct {
 	Pagination *PaginationRequest `json:"pagination,omitempty"`
 }
 
-// Update OperationResponse to use this interface
+// OperationResponse contains the output data for an operation on a resource.
 type OperationResponse struct {
 	// Data can be a single resource or a slice of resources
 	Data ResponseData `json:"data,omitempty"`

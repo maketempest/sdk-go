@@ -5,23 +5,23 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	"cloud.google.com/go/storage"
 	"github.com/tempestdx/sdk-go/jsonschema"
 	"github.com/tempestdx/sdk-go/resource"
-	"golang.org/x/sync/errgroup"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
-	"google.golang.org/api/storage/v1"
 )
 
 // For simplicity in this example, we're using hardcoded values
 // In a real implementation, these would be properly managed
 var (
-	serviceAccountCreds = "SERVICE_ACCOUNT_CREDS"
+	serviceAccountCreds = "API_TOKEN_HERE"
 	projectID           = "tempest-sandbox"
 )
 
-func bucketToResource(bucket *storage.Bucket) *resource.Resource {
+func bucketToResource(bucket *storage.BucketAttrs) *resource.Resource {
 	return &resource.Resource{
-		ExternalID:  bucket.Id,
+		ExternalID:  bucket.Name,
 		DisplayName: bucket.Name,
 		Name:        bucket.Name,
 		Category:    resource.CategoryStorage,
@@ -33,9 +33,11 @@ func bucketToResource(bucket *storage.Bucket) *resource.Resource {
 			},
 		},
 		Properties: map[string]any{
-			"id":            bucket.Id,
-			"location":      bucket.Location,
-			"storage_class": bucket.StorageClass,
+			"created":            bucket.Created,
+			"updated":            bucket.Updated,
+			"location":           bucket.Location,
+			"storage_class":      bucket.StorageClass,
+			"versioning_enabled": bucket.VersioningEnabled,
 		},
 	}
 }
@@ -50,7 +52,6 @@ func getAuthOption() (option.ClientOption, error) {
 }
 
 func bucketHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, error) {
-	// TODO: Check if the bucket exists and is healthy
 	return &resource.HealthCheckResponse{
 		Status: resource.HealthCheckStatusHealthy,
 	}, nil
@@ -58,14 +59,16 @@ func bucketHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, erro
 
 func createBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
 	opt, err := getAuthOption()
+
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
 
-	service, err := storage.NewService(ctx, opt)
+	client, err := storage.NewClient(ctx, opt)
 	if err != nil {
-		return nil, fmt.Errorf("create service: %w", err)
+		return nil, fmt.Errorf("create client: %w", err)
 	}
+	defer client.Close()
 
 	name := req.Args["name"].(string)
 	location := "US"
@@ -78,19 +81,27 @@ func createBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 		storageClass = sc
 	}
 
-	bucket := &storage.Bucket{
+	bucketAttr := &storage.BucketAttrs{
 		Name:         name,
 		Location:     location,
 		StorageClass: storageClass,
 	}
 
-	createdBucket, err := service.Buckets.Insert(projectID, bucket).Context(ctx).Do()
+	bucket := client.Bucket(name)
+	err = bucket.Create(ctx, projectID, bucketAttr)
+
 	if err != nil {
 		return nil, fmt.Errorf("create bucket: %w", err)
 	}
 
+	bucketAttr, err = bucket.Attrs(ctx)
+
+	if err != nil {
+		return nil, fmt.Errorf("getting bucket attributes: %w", err)
+	}
+
 	return &resource.OperationResponse{
-		Data: bucketToResource(createdBucket),
+		Data: bucketToResource(bucketAttr),
 	}, nil
 }
 
@@ -99,57 +110,45 @@ func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
-
-	service, err := storage.NewService(ctx, opt)
+	client, err := storage.NewClient(ctx, opt)
 	if err != nil {
 		return nil, fmt.Errorf("create service: %w", err)
 	}
+	defer client.Close()
 
-	serviceReq := service.Buckets.List(projectID)
-
-	pageSize := 50
-
+	bucketsIter := client.Buckets(ctx, projectID)
+	pageSize := 5
 	if req.Pagination != nil {
 		if req.Pagination.PageSize > 0 {
 			pageSize = req.Pagination.PageSize
 		}
 		if req.Pagination.Cursor != "" {
-			serviceReq.PageToken(req.Pagination.Cursor)
+			bucketsIter.PageInfo().Token = req.Pagination.Cursor
 		}
 	}
-
-	// Set max results based on page size
-	serviceReq.MaxResults(int64(pageSize))
-
-	buckets, err := serviceReq.Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("list buckets: %w", err)
-	}
-
-	// Convert bucket items to resources
+	// Collect bucket attributes
 	var items []*resource.Resource
-	for _, i := range buckets.Items {
-		items = append(items, bucketToResource(i))
+	var nextCursor string
+	for {
+		bucketAttrs, err := bucketsIter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("list buckets: %w", err)
+		}
+		items = append(items, bucketToResource(bucketAttrs))
+		if len(items) >= pageSize {
+			// Get the token for the next page
+			nextCursor = bucketsIter.PageInfo().Token
+			break
+		}
 	}
-
-	totalCount := len(items)
-	if buckets.NextPageToken != "" {
-		totalCount = len(items) + 1
+	totalCount := bucketsIter.PageInfo().MaxSize
+	if nextCursor != "" {
+		totalCount = -1
 	}
-
-	nextCursor := buckets.NextPageToken
-
-	prevCursor := ""
-
-	return resource.NewResourceListResponse(
-		items,
-		totalCount,
-		pageSize,
-		nextCursor,
-		prevCursor,
-		fmt.Sprintf("Found %d buckets", len(items)),
-		nil,
-	), nil
+	return resource.NewResourceListResponse(items, totalCount, pageSize, nextCursor, fmt.Sprintf("Found %d buckets", len(items)), nil), nil
 }
 
 func readBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
@@ -158,49 +157,44 @@ func readBucket(ctx context.Context, req *resource.OperationRequest) (*resource.
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
 
-	service, err := storage.NewService(ctx, opt)
+	// Create a new client with the Cloud Storage package
+	client, err := storage.NewClient(ctx, opt)
 	if err != nil {
-		return nil, fmt.Errorf("create service: %w", err)
+		return nil, fmt.Errorf("create cloud storage client: %w", err)
+	}
+	defer client.Close()
+
+	if req.Resource == nil || req.Resource.ExternalID == "" {
+		return nil, fmt.Errorf("resource ID is missing")
 	}
 
-	bucket, err := service.Buckets.Get(req.Resource.ExternalID).Context(ctx).Do()
+	bucketName := req.Resource.ExternalID
+	bkt := client.Bucket(bucketName)
+	attrs, err := bkt.Attrs(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get bucket: %w", err)
+		return nil, fmt.Errorf("get bucket attributes: %w", err)
 	}
 
-	return &resource.OperationResponse{
-		Data: bucketToResource(bucket),
-	}, nil
+	return resource.NewSingleResourceResponse(bucketToResource(attrs), fmt.Sprintf("Found bucket %s", req.Resource.ExternalID), nil), nil
 }
 
 func deleteBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
+	if req.Resource == nil {
+		return nil, fmt.Errorf("resource is nil")
+	}
+
 	opt, err := getAuthOption()
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
 
-	service, err := storage.NewService(ctx, opt)
+	client, err := storage.NewClient(ctx, opt)
 	if err != nil {
-		return nil, fmt.Errorf("create service: %w", err)
+		return nil, fmt.Errorf("create client: %w", err)
 	}
+	defer client.Close()
 
-	objects, err := service.Objects.List(req.Resource.ExternalID).Context(ctx).Versions(true).Do()
-	if err != nil {
-		return nil, fmt.Errorf("list objects: %w", err)
-	}
-
-	g, errGroupCtx := errgroup.WithContext(ctx)
-	for _, object := range objects.Items {
-		object := object
-		g.Go(func() error {
-			return service.Objects.Delete(req.Resource.ExternalID, object.Name).Context(errGroupCtx).Generation(object.Generation).Do()
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("delete objects: %w", err)
-	}
-
-	err = service.Buckets.Delete(req.Resource.ExternalID).Context(ctx).Do()
+	err = client.Bucket(req.Resource.ExternalID).Delete(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("delete bucket: %w", err)
 	}
@@ -230,7 +224,6 @@ func NewBucketDefinition() (*resource.Definition, error) {
 		),
 		resource.WithInstructions(bucketInstructionsMarkdown),
 		resource.WithCategories(resource.CategoryStorage),
-		// TODO: check if more options are needed
 	)
 	if err != nil {
 		return nil, err

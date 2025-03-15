@@ -15,6 +15,10 @@ type CanonicalOperation struct {
 type CanonicalType int
 
 // TODO: cleanup and deduplicate canonical operations
+// Delete or Destroy (uninstall?)
+// Read or Get
+// Write or Update (configure?)
+// Install or Create
 const (
 	Unknown CanonicalType = iota
 	Install

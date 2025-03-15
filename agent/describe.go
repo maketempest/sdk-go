@@ -12,8 +12,8 @@ import (
 type OperationDescription struct {
 	Name             string                   `json:"name"`
 	Args             json.RawMessage          `json:"args,omitempty"`
-	ActionConfig     map[string]interface{}   `json:"action_config,omitempty"`
-	CanonicalBinding []map[string]interface{} `json:"canonical_binding,omitempty"`
+	ActionConfig     map[string]any   `json:"action_config,omitempty"`
+	CanonicalBinding []map[string]any `json:"canonical_binding,omitempty"`
 }
 
 // ResourceDescription represents a resource in the describe API response
@@ -23,7 +23,7 @@ type ResourceDescription struct {
 	LifecycleStage       string                          `json:"lifecycle_stage"`
 	PropertiesSchema     json.RawMessage                 `json:"properties_schema,omitempty"`
 	Categories           []string                        `json:"categories,omitempty"`
-	Links                []map[string]interface{}        `json:"links,omitempty"`
+	Links                []map[string]any        `json:"links,omitempty"`
 	InstructionsMarkdown string                          `json:"instructions_markdown,omitempty"`
 	Operations           map[string]OperationDescription `json:"operations,omitempty"`
 	HealthcheckEnabled   bool                            `json:"healthcheck_enabled,omitempty"`
@@ -170,10 +170,10 @@ func buildOperationDescription(opName string, operation *resource.Operation) Ope
 	return opDesc
 }
 
-func convertCanonicalOperations(canonOps []resource.CanonicalOperation) []map[string]interface{} {
-	canonicalBindings := make([]map[string]interface{}, 0, len(canonOps))
+func convertCanonicalOperations(canonOps []resource.CanonicalOperation) []map[string]any {
+	canonicalBindings := make([]map[string]any, 0, len(canonOps))
 	for _, op := range canonOps {
-		canonicalBindings = append(canonicalBindings, map[string]interface{}{
+		canonicalBindings = append(canonicalBindings, map[string]any{
 			"type":        op.Type.String(),
 			"priority":    op.Priority,
 			"concurrency": op.Concurrency,
@@ -190,10 +190,10 @@ func convertCategories(cats []resource.Category) []string {
 	return categories
 }
 
-func convertLinks(links []resource.Link) []map[string]interface{} {
-	linksMaps := make([]map[string]interface{}, len(links))
+func convertLinks(links []resource.Link) []map[string]any {
+	linksMaps := make([]map[string]any, len(links))
 	for i, link := range links {
-		linksMaps[i] = map[string]interface{}{
+		linksMaps[i] = map[string]any{
 			"title":    link.Title,
 			"url":      link.URL,
 			"type":     string(link.Type),
@@ -238,7 +238,7 @@ func marshalCanonicalBindings(bindings resourceCanonicalBindings, logger *slog.L
 }
 
 // Generic helper for marshaling data to JSON
-func marshalData(data interface{}, logger *slog.Logger) json.RawMessage {
+func marshalData(data any, logger *slog.Logger) json.RawMessage {
 	bytes, err := json.Marshal(data)
 	if err != nil {
 		logger.Error("Failed to marshal data", "error", err)

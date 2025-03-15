@@ -62,13 +62,13 @@ type Operation struct {
 
 // OperationResult represents the result of an executed operation
 type OperationResult struct {
-	TaskID    string                 `json:"task_id"`
-	Status    string                 `json:"status"`           // "success", "failure"
-	Message   string                 `json:"message"`          // Human-readable message
-	Error     string                 `json:"error,omitempty"`  // Error details if failed
-	Output    map[string]interface{} `json:"output,omitempty"` // Operation output data
-	StartTime time.Time              `json:"start_time"`
-	EndTime   time.Time              `json:"end_time"`
+	TaskID    string         `json:"task_id"`
+	Status    string         `json:"status"`           // "success", "failure"
+	Message   string         `json:"message"`          // Human-readable message
+	Error     string         `json:"error,omitempty"`  // Error details if failed
+	Output    map[string]any `json:"output,omitempty"` // Operation output data
+	StartTime time.Time      `json:"start_time"`
+	EndTime   time.Time      `json:"end_time"`
 }
 
 // JSON-friendly canonical binding structures
@@ -566,11 +566,6 @@ func (a *agent) registerHandler(handlerType string, appName, version, resourceID
 			result.Status = "success"
 			result.Message = fmt.Sprintf("Canonical operation %s completed successfully", operationName)
 
-			// Extract output if available
-			if resp != nil && resp.Data != nil {
-				result.Output = extractOutputFromResponseData(resp.Data)
-			}
-
 			// Add result to reporting queue
 			a.resultQueue.Enqueue(result)
 
@@ -1028,7 +1023,7 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 	defer r.Body.Close()
 
 	// Parse request into a raw map first to support both formats
-	var rawData map[string]interface{}
+	var rawData map[string]any
 	if err := json.Unmarshal(body, &rawData); err != nil {
 		return nil, "", fmt.Errorf("error parsing request: %v", err)
 	}
@@ -1040,18 +1035,18 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 
 	// Check if this is the standard API format with nested "task" structure
 	if taskRaw, hasTask := rawData["task"]; hasTask {
-		task, ok := taskRaw.(map[string]interface{})
+		task, ok := taskRaw.(map[string]any)
 		if !ok {
 			return nil, "", fmt.Errorf("task field is not a valid object")
 		}
 
 		// Map task.input to Args
-		if input, hasInput := task["input"].(map[string]interface{}); hasInput {
+		if input, hasInput := task["input"].(map[string]any); hasInput {
 			opReq.Args = input
 		}
 
 		// Map task.resource to Resource
-		if resourceRaw, hasResource := task["resource"].(map[string]interface{}); hasResource {
+		if resourceRaw, hasResource := task["resource"].(map[string]any); hasResource {
 			// Create new resource instance
 			res := &resource.Resource{}
 
@@ -1070,7 +1065,7 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 			}
 
 			// Map properties
-			if props, ok := resourceRaw["properties"].(map[string]interface{}); ok {
+			if props, ok := resourceRaw["properties"].(map[string]any); ok {
 				res.Properties = props
 			}
 
@@ -1079,12 +1074,12 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 		}
 
 		// Map task.environment_variables (if supported by OperationRequest)
-		if envVarsRaw, hasEnvVars := task["environment_variables"].([]interface{}); hasEnvVars {
+		if envVarsRaw, hasEnvVars := task["environment_variables"].([]any); hasEnvVars {
 			// Check if your OperationRequest has a field for environment variables
 			// If so, map them here
 			envVars := make(map[string]resource.EnvironmentVariable)
 			for _, envVar := range envVarsRaw {
-				if envVarMap, ok := envVar.(map[string]interface{}); ok {
+				if envVarMap, ok := envVar.(map[string]any); ok {
 					key := envVarMap["key"].(string)
 					value := envVarMap["value"].(string)
 					envVars[key] = resource.EnvironmentVariable{
@@ -1097,7 +1092,7 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 		}
 
 		// Map task.metadata
-		if metadataRaw, hasMetadata := task["metadata"].(map[string]interface{}); hasMetadata {
+		if metadataRaw, hasMetadata := task["metadata"].(map[string]any); hasMetadata {
 			// Map relevant metadata fields
 			if taskID, ok := metadataRaw["task_id"].(string); ok {
 				opReq.Metadata.TaskID = taskID
@@ -1114,11 +1109,11 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 	}
 
 	// Map top-level metadata (might contain additional context)
-	if metadataRaw, hasMetadata := rawData["metadata"].(map[string]interface{}); hasMetadata {
+	if metadataRaw, hasMetadata := rawData["metadata"].(map[string]any); hasMetadata {
 		opReq.Metadata.Owners = []resource.Owner{}
 		// Extract author info
 		// TODO: Expand owner support to include all owners supported on server
-		if authorRaw, hasAuthor := metadataRaw["author"].(map[string]interface{}); hasAuthor {
+		if authorRaw, hasAuthor := metadataRaw["author"].(map[string]any); hasAuthor {
 			opReq.Metadata.Owners = append(opReq.Metadata.Owners, resource.Owner{
 				Email: authorRaw["email"].(string),
 				Name:  authorRaw["name"].(string),
@@ -1515,7 +1510,7 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 		TaskID:    op.TaskID,
 		Status:    "success",
 		Message:   "Operation simulated successfully",
-		Output:    make(map[string]interface{}),
+		Output:    make(map[string]any),
 		StartTime: startTime,
 		EndTime:   time.Now(),
 	}
@@ -1553,9 +1548,8 @@ func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
 						items = append(items, item.Properties)
 					}
 				}
-
 				output["_collection"] = map[string]any{
-					"items":      items,
+					"items":      nil,
 					"count":      len(collection.Items),
 					"pagination": collection.Pagination,
 				}

@@ -67,7 +67,7 @@ func NewSingleResourceResponse(resource *Resource, message string, err error) *O
 }
 
 // NewResourceListResponse creates an operation response for a list of resources with pagination.
-func NewResourceListResponse(resources []*Resource, totalCount, pageSize int, nextCursor, prevCursor, message string, err error) *OperationResponse {
+func NewResourceListResponse(resources []*Resource, totalCount, pageSize int, nextCursor, message string, err error) *OperationResponse {
 	var collection *ResourceCollection
 	if resources != nil {
 		hasMore := nextCursor != ""
@@ -79,7 +79,6 @@ func NewResourceListResponse(resources []*Resource, totalCount, pageSize int, ne
 				PageSize:   pageSize,
 				HasMore:    hasMore,
 				NextCursor: nextCursor,
-				PrevCursor: prevCursor,
 			},
 		}
 	}

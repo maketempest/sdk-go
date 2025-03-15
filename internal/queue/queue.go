@@ -7,7 +7,7 @@ import (
 // Queue is a thread-safe queue implemented using Go channels.
 // It provides FIFO (First In, First Out) semantics.
 type Queue struct {
-	items chan interface{}
+	items chan any
 	done  chan struct{}
 	mutex sync.RWMutex // Protects access to done channel and for len/cap operations
 }
@@ -16,7 +16,7 @@ type Queue struct {
 // If capacity is 0, the queue will be unbuffered.
 func NewQueue(capacity int) *Queue {
 	return &Queue{
-		items: make(chan interface{}, capacity),
+		items: make(chan any, capacity),
 		done:  make(chan struct{}),
 	}
 }
@@ -24,7 +24,7 @@ func NewQueue(capacity int) *Queue {
 // Enqueue adds an item to the queue.
 // It returns false if the queue is closed, true otherwise.
 // This function will block if the queue is at capacity.
-func (q *Queue) Enqueue(item interface{}) bool {
+func (q *Queue) Enqueue(item any) bool {
 	// Fast path: check if done channel is closed
 	select {
 	case <-q.done:
@@ -44,7 +44,7 @@ func (q *Queue) Enqueue(item interface{}) bool {
 
 // TryEnqueue attempts to add an item to the queue without blocking.
 // It returns true if the item was enqueued, false if the queue was full or closed.
-func (q *Queue) TryEnqueue(item interface{}) bool {
+func (q *Queue) TryEnqueue(item any) bool {
 	// Fast path: check if done channel is closed
 	select {
 	case <-q.done:
@@ -67,7 +67,7 @@ func (q *Queue) TryEnqueue(item interface{}) bool {
 // Dequeue removes and returns an item from the queue.
 // It blocks until an item is available or the queue is closed.
 // Returns the dequeued item and a boolean indicating success.
-func (q *Queue) Dequeue() (interface{}, bool) {
+func (q *Queue) Dequeue() (any, bool) {
 	// Try to dequeue an item
 	select {
 	case item := <-q.items:
@@ -85,7 +85,7 @@ func (q *Queue) Dequeue() (interface{}, bool) {
 
 // TryDequeue attempts to remove and return an item from the queue without blocking.
 // Returns the dequeued item and a boolean indicating success.
-func (q *Queue) TryDequeue() (interface{}, bool) {
+func (q *Queue) TryDequeue() (any, bool) {
 	select {
 	case item := <-q.items:
 		return item, true

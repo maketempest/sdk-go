@@ -22,7 +22,6 @@ type Pagination struct {
 	PageSize   int    `json:"pageSize"`             // Number of items per page
 	HasMore    bool   `json:"hasMore"`              // Indicates if there are more items available
 	NextCursor string `json:"nextCursor,omitempty"` // Opaque cursor for the next page
-	PrevCursor string `json:"prevCursor,omitempty"` // Opaque cursor for the previous page
 }
 
 // ResponseData is an interface to group *Resource and *ResourceCollection

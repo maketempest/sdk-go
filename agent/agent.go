@@ -567,6 +567,11 @@ func (a *agent) registerHandler(handlerType string, appName, version, resourceID
 			result.Status = "success"
 			result.Message = fmt.Sprintf("Canonical operation %s completed successfully", operationName)
 
+			// Extract output if available
+			if resp != nil && resp.Data != nil {
+				result.Output = extractOutputFromResponseData(resp.Data)
+			}
+
 			// Add result to reporting queue
 			a.resultQueue.Enqueue(result)
 
@@ -1609,20 +1614,16 @@ func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
 		// Try to handle as a collection
 		if collection, ok := data.(*resource.ResourceCollection); ok && collection != nil {
 			if len(collection.Items) > 0 {
-				// Include first item's properties as base
-				if collection.Items[0].Properties != nil {
-					output = collection.Items[0].Properties
-				}
-
-				// Add collection metadata
+				// Create collection metadata
 				items := make([]map[string]any, 0, len(collection.Items))
 				for _, item := range collection.Items {
 					if item.Properties != nil {
 						items = append(items, item.Properties)
 					}
 				}
-				output["_collection"] = map[string]any{
-					//	"items":      items,
+
+				output = map[string]any{
+					"items":      items,
 					"count":      len(collection.Items),
 					"pagination": collection.Pagination,
 				}

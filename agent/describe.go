@@ -10,8 +10,8 @@ import (
 
 // OperationDescription represents an operation in the describe API response
 type OperationDescription struct {
-	Name             string                   `json:"name"`
-	Args             json.RawMessage          `json:"args,omitempty"`
+	Name             string           `json:"name"`
+	Args             json.RawMessage  `json:"args,omitempty"`
 	ActionConfig     map[string]any   `json:"action_config,omitempty"`
 	CanonicalBinding []map[string]any `json:"canonical_binding,omitempty"`
 }
@@ -23,7 +23,7 @@ type ResourceDescription struct {
 	LifecycleStage       string                          `json:"lifecycle_stage"`
 	PropertiesSchema     json.RawMessage                 `json:"properties_schema,omitempty"`
 	Categories           []string                        `json:"categories,omitempty"`
-	Links                []map[string]any        `json:"links,omitempty"`
+	Links                []map[string]any                `json:"links,omitempty"`
 	InstructionsMarkdown string                          `json:"instructions_markdown,omitempty"`
 	Operations           map[string]OperationDescription `json:"operations,omitempty"`
 	HealthcheckEnabled   bool                            `json:"healthcheck_enabled,omitempty"`

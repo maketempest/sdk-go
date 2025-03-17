@@ -192,26 +192,27 @@ func New(options ...Option) (*agent, error) {
 
 	// Create the agent
 	a := &agent{
-		apiKey:        apiKey,
-		apps:          make(map[string]*appConfig),
-		resultQueue:   queue.NewQueue(1000),
-		pollers:       make(map[string]context.CancelFunc),
-		server:        server,
-		mux:           mux,
-		routes:        make(map[string]http.Handler),
-		workers:       workers,
-		resultWorkers: resultWorkers,
-		workerTracker: workerTracker,
-		resultTracker: resultTracker,
-		workerStop:    make(chan struct{}),
-		resultStop:    make(chan struct{}),
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
-		apiURL:        apiURL,
-		logger:        logger,
-		pollTimeout:   pollTimeout,
-		stopOptions:   DefaultStopOptions,
-		shutdownMutex: sync.Mutex{},
-		isShutdown:    false,
+		apiKey:         apiKey,
+		apps:           make(map[string]*appConfig),
+		resultQueue:    queue.NewQueue(1000),
+		pollers:        make(map[string]context.CancelFunc),
+		server:         server,
+		mux:            mux,
+		routes:         make(map[string]http.Handler),
+		workers:        workers,
+		resultWorkers:  resultWorkers,
+		workerTracker:  workerTracker,
+		resultTracker:  resultTracker,
+		workerStop:     make(chan struct{}),
+		resultStop:     make(chan struct{}),
+		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		apiURL:         apiURL,
+		logger:         logger,
+		pollTimeout:    pollTimeout,
+		stopOptions:    DefaultStopOptions,
+		shutdownMutex:  sync.Mutex{},
+		isShutdown:     false,
+		resourceQueues: queue.NewResourceQueueManager(),
 	}
 
 	// Create resource registry
@@ -1500,20 +1501,92 @@ func (a *agent) reportOperationError(op *Operation, errMsg string) {
 }
 
 // executeOperation finds and executes the appropriate operation handler
-// This is a simplified implementation that would need to be replaced with the actual logic
 func (a *agent) executeOperation(op *Operation) *OperationResult {
 	startTime := time.Now()
 
-	// Implement actual operation execution logic here
-	// For now, just creating a simple success result
+	logger := a.logger.With(
+		"task_id", op.TaskID,
+		"app", op.AppName,
+		"resource", op.ResourceID,
+		"operation", op.OperationName)
+
+	// Find the app configuration
+	appConfig, ok := a.apps[op.AppName]
+	if !ok {
+		logger.Error("App not found")
+		return &OperationResult{
+			TaskID:    op.TaskID,
+			Status:    "failure",
+			Message:   "Operation failed",
+			Error:     fmt.Sprintf("app %s not found", op.AppName),
+			StartTime: startTime,
+			EndTime:   time.Now(),
+		}
+	}
+
+	// Find the resource definition
+	resourceDef, ok := appConfig.GetResourceDefinition(op.ResourceID)
+	if !ok {
+		logger.Error("Resource not found")
+		return &OperationResult{
+			TaskID:    op.TaskID,
+			Status:    "failure",
+			Message:   "Operation failed",
+			Error:     fmt.Sprintf("resource %s not found", op.ResourceID),
+			StartTime: startTime,
+			EndTime:   time.Now(),
+		}
+	}
+
+	// Find the operation handler
+	operation, ok := resourceDef.GetOperation(op.OperationName)
+	if !ok {
+		logger.Error("Operation not found")
+		return &OperationResult{
+			TaskID:    op.TaskID,
+			Status:    "failure",
+			Message:   "Operation failed",
+			Error:     fmt.Sprintf("operation %s not found", op.OperationName),
+			StartTime: startTime,
+			EndTime:   time.Now(),
+		}
+	}
+
+	ctx := context.Background()
+
+	// Execute the operation
+	logger.Info("Executing operation")
+	resp, err := operation.Fn(ctx, op.Request)
+	endTime := time.Now()
+
+	if err != nil {
+		logger.Error("Operation failed", "error", err)
+		return &OperationResult{
+			TaskID:    op.TaskID,
+			Status:    "failure",
+			Message:   "Operation failed",
+			Error:     err.Error(),
+			StartTime: startTime,
+			EndTime:   endTime,
+		}
+	}
+
+	// Create success result
 	result := &OperationResult{
 		TaskID:    op.TaskID,
 		Status:    "success",
-		Message:   "Operation simulated successfully",
-		Output:    make(map[string]any),
+		Message:   "Operation completed successfully",
 		StartTime: startTime,
-		EndTime:   time.Now(),
+		EndTime:   endTime,
 	}
+
+	// Extract output if available
+	if resp != nil && resp.Data != nil {
+		result.Output = extractOutputFromResponseData(resp.Data)
+	}
+
+	logger.Info("Operation completed successfully",
+		"duration_ms", endTime.Sub(startTime).Milliseconds())
 
 	return result
 }
@@ -1549,7 +1622,7 @@ func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
 					}
 				}
 				output["_collection"] = map[string]any{
-					"items":      nil,
+					//	"items":      items,
 					"count":      len(collection.Items),
 					"pagination": collection.Pagination,
 				}

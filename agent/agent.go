@@ -353,6 +353,9 @@ func (a *agent) Start() error {
 	}
 	a.logger.Info("Registered routes", "routes", routes)
 
+	// Connect to Tempest API with app definitions
+	a.connectApps()
+
 	// Initialize worker stop channel
 	a.workerStop = make(chan struct{})
 
@@ -1624,7 +1627,6 @@ func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
 
 				output = map[string]any{
 					"items":      items,
-					"count":      len(collection.Items),
 					"pagination": collection.Pagination,
 				}
 			}
@@ -1632,4 +1634,63 @@ func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
 	}
 
 	return output
+}
+
+// connectApps sends the app definitions to the Tempest API for connection
+func (a *agent) connectApps() {
+	if a.apiKey == "" {
+		a.logger.Warn("No API key provided, skipping app connection")
+		return
+	}
+
+	a.logger.Info("Connecting apps to Tempest API")
+
+	// Build app definitions from describe response
+	appDefinitions := a.buildDescribeResponse()
+
+	for appName, appDefinition := range appDefinitions {
+		a.logger.Debug("Connecting app to Tempest API", "app", appName)
+
+		// Create the request URL
+		url := fmt.Sprintf("%s/apps.version.connect", a.apiURL)
+
+		// Marshal the app definition to JSON
+		data, err := json.Marshal(appDefinition)
+		if err != nil {
+			a.logger.Error("Failed to marshal app definition", "app", appName, "error", err)
+			continue
+		}
+
+		// Create the HTTP request
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+		if err != nil {
+			a.logger.Error("Failed to create app connection request", "app", appName, "error", err)
+			continue
+		}
+
+		// Add headers
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+a.apiKey)
+
+		// Execute the request
+		resp, err := a.httpClient.Do(req)
+		if err != nil {
+			a.logger.Error("Failed to connect app", "app", appName, "error", err)
+			continue
+		}
+
+		// Check response status
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			a.logger.Error("Failed to connect app",
+				"app", appName,
+				"status", resp.StatusCode,
+				"response", string(body))
+			resp.Body.Close()
+			continue
+		}
+
+		resp.Body.Close()
+		a.logger.Info("Successfully connected app to Tempest API", "app", appName)
+	}
 }

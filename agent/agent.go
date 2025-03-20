@@ -63,7 +63,7 @@ type Operation struct {
 // OperationResult represents the result of an executed operation
 type OperationResult struct {
 	TaskID    string         `json:"task_id"`
-	Status    string         `json:"status"`           // "success", "failure"
+	Status    string         `json:"status"`           // "completed", "failed"
 	Message   string         `json:"message"`          // Human-readable message
 	Error     string         `json:"error,omitempty"`  // Error details if failed
 	Output    map[string]any `json:"output,omitempty"` // Operation output data
@@ -550,7 +550,7 @@ func (a *agent) registerHandler(handlerType string, appName, version, resourceID
 
 			if err != nil {
 				// Operation failed
-				result.Status = "failure"
+				result.Status = "failed"
 				result.Error = err.Error()
 				result.Message = fmt.Sprintf("Canonical operation %s failed: %v", operationName, err)
 
@@ -567,7 +567,7 @@ func (a *agent) registerHandler(handlerType string, appName, version, resourceID
 			}
 
 			// Operation succeeded
-			result.Status = "success"
+			result.Status = "completed"
 			result.Message = fmt.Sprintf("Canonical operation %s completed successfully", operationName)
 
 			// Extract output if available
@@ -676,7 +676,7 @@ func (h *operationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		// Operation failed
-		result.Status = "failure"
+		result.Status = "failed"
 		result.Error = err.Error()
 		result.Message = fmt.Sprintf("Operation %s failed: %v", h.operationName, err)
 
@@ -693,7 +693,7 @@ func (h *operationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Operation succeeded
-	result.Status = "success"
+	result.Status = "completed"
 	result.Message = fmt.Sprintf("Operation %s completed successfully", h.operationName)
 
 	// Extract output if available
@@ -784,7 +784,7 @@ func (a *agent) executeCanonicalOperation(
 			opEndTime := time.Now()
 			result := &OperationResult{
 				TaskID:    taskID,
-				Status:    "failure",
+				Status:    "failed",
 				Message:   fmt.Sprintf("Operation %s required by canonical type %s not found", opMeta.Name, canonicalTypeStr),
 				Error:     fmt.Sprintf("operation %s not found", opMeta.Name),
 				StartTime: opStartTime,
@@ -811,7 +811,7 @@ func (a *agent) executeCanonicalOperation(
 
 		if err != nil {
 			// Operation failed
-			opResult.Status = "failure"
+			opResult.Status = "failed"
 			opResult.Error = err.Error()
 			opResult.Message = fmt.Sprintf("Operation %s in canonical type %s failed: %v",
 				opMeta.Name, canonicalTypeStr, err)
@@ -827,7 +827,7 @@ func (a *agent) executeCanonicalOperation(
 		}
 
 		// Operation succeeded
-		opResult.Status = "success"
+		opResult.Status = "completed"
 		opResult.Message = fmt.Sprintf("Operation %s in canonical type %s completed successfully",
 			opMeta.Name, canonicalTypeStr)
 
@@ -846,7 +846,7 @@ func (a *agent) executeCanonicalOperation(
 	// Report overall canonical operation success
 	finalResult := &OperationResult{
 		TaskID:    taskID,
-		Status:    "success",
+		Status:    "completed",
 		Message:   fmt.Sprintf("Canonical operation %s completed successfully", canonicalTypeStr),
 		StartTime: startTime,
 		EndTime:   time.Now(),
@@ -913,7 +913,7 @@ func (a *agent) resultReporter() {
 		}
 
 		// Report result to Tempest API
-		reportURL := fmt.Sprintf("%s/v1/apps/operations/report", a.apiURL)
+		reportURL := fmt.Sprintf("%s/apps.operations.report", a.apiURL)
 
 		data, err := json.Marshal(result)
 		if err != nil {
@@ -1281,10 +1281,28 @@ func (a *agent) pollAndProcessTasks(registry *ResourceRegistry) error {
 	defer cancel()
 
 	// Build the request URL
-	url := fmt.Sprintf("%s/api/v1/tasks", a.apiURL)
+	url := fmt.Sprintf("%s/apps.tasks", a.apiURL)
 
-	// Create the HTTP request
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	// Build request body with app names and supported versions
+	appVersions := make(map[string][]string)
+	for appName, appConfig := range a.apps {
+		appVersions[appName] = appConfig.SupportedVersions
+	}
+
+	// Create the request body with supported_apps key and limit parameter
+	requestBody := map[string]any{
+		"supported_apps": appVersions,
+		"limit":          10,
+	}
+
+	// Marshal the request body to JSON
+	data, err := json.Marshal(requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	// Create the POST request with body
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(data))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -1323,7 +1341,6 @@ func (a *agent) pollAndProcessTasks(registry *ResourceRegistry) error {
 				"resource", task.ResourceID,
 				"operation", task.OperationName,
 				"error", err)
-			// Continue processing other tasks
 		}
 	}
 
@@ -1493,7 +1510,7 @@ func (a *agent) processOperation(op *Operation) {
 func (a *agent) reportOperationError(op *Operation, errMsg string) {
 	result := &OperationResult{
 		TaskID:    op.TaskID,
-		Status:    "failure",
+		Status:    "failed",
 		Message:   "Operation failed",
 		Error:     errMsg,
 		StartTime: time.Now(),
@@ -1524,7 +1541,7 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 		logger.Error("App not found")
 		return &OperationResult{
 			TaskID:    op.TaskID,
-			Status:    "failure",
+			Status:    "failed",
 			Message:   "Operation failed",
 			Error:     fmt.Sprintf("app %s not found", op.AppName),
 			StartTime: startTime,
@@ -1538,7 +1555,7 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 		logger.Error("Resource not found")
 		return &OperationResult{
 			TaskID:    op.TaskID,
-			Status:    "failure",
+			Status:    "failed",
 			Message:   "Operation failed",
 			Error:     fmt.Sprintf("resource %s not found", op.ResourceID),
 			StartTime: startTime,
@@ -1552,7 +1569,7 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 		logger.Error("Operation not found")
 		return &OperationResult{
 			TaskID:    op.TaskID,
-			Status:    "failure",
+			Status:    "failed",
 			Message:   "Operation failed",
 			Error:     fmt.Sprintf("operation %s not found", op.OperationName),
 			StartTime: startTime,
@@ -1571,7 +1588,7 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 		logger.Error("Operation failed", "error", err)
 		return &OperationResult{
 			TaskID:    op.TaskID,
-			Status:    "failure",
+			Status:    "failed",
 			Message:   "Operation failed",
 			Error:     err.Error(),
 			StartTime: startTime,
@@ -1582,7 +1599,7 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 	// Create success result
 	result := &OperationResult{
 		TaskID:    op.TaskID,
-		Status:    "success",
+		Status:    "completed",
 		Message:   "Operation completed successfully",
 		StartTime: startTime,
 		EndTime:   endTime,

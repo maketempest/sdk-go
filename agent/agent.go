@@ -1618,39 +1618,24 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 
 // Helper function to extract output from response data
 func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
-	output := make(map[string]any)
+	outputMap := make(map[string]any)
 
-	if data == nil {
-		return output
-	}
-
-	switch typedData := data.(type) {
+	switch data := data.(type) {
 	case *resource.Resource:
-		// For single resources, use its properties directly
-		if typedData.Properties != nil {
-			output = typedData.Properties
-		}
-	default:
-		// Try to handle as a collection
-		if collection, ok := data.(*resource.ResourceCollection); ok && collection != nil {
-			if len(collection.Items) > 0 {
-				// Create collection metadata
-				items := make([]map[string]any, 0, len(collection.Items))
-				for _, item := range collection.Items {
-					if item.Properties != nil {
-						items = append(items, item.Properties)
-					}
-				}
-
-				output = map[string]any{
-					"items":      items,
-					"pagination": collection.Pagination,
-				}
-			}
+		outputMap["externalId"] = data.ExternalID
+		outputMap["name"] = data.Name
+		outputMap["displayName"] = data.DisplayName
+		outputMap["properties"] = data.Properties
+		outputMap["category"] = data.Category
+		outputMap["links"] = data.Links
+	case *resource.ResourceCollection:
+		outputMap["items"] = data.Items
+		if data.Pagination != nil {
+			outputMap["pagination"] = data.Pagination
 		}
 	}
 
-	return output
+	return outputMap
 }
 
 // connectApps sends the app definitions to the Tempest API for connection

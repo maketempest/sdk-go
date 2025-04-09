@@ -22,7 +22,7 @@ const (
 			"description": "The location of the bucket.",
 			"type": "string"
 		},
-		"storage_class": {
+		"storageClass": {
 			"title": "Storage Class",
 			"description": "The storage class of the bucket.",
 			"type": "string"
@@ -47,7 +47,7 @@ const (
 			"type": "string",
 			"default": "US"
 		},
-		"storage_class": {
+		"storageClass": {
 			"title": "Storage Class",
 			"description": "The storage class of the bucket.",
 			"type": "string",
@@ -57,6 +57,21 @@ const (
 	"required": ["name"],
 	"additionalProperties": false
 }`
+
+	bucketCredentialsSchema = `
+{
+	"type": "object",
+	"properties": {
+		"serviceAccountCreds": {
+			"title": "Service Account Credentials",
+			"description": "The service account credentials for the Google Cloud Storage API.",
+			"type": "string"
+		}
+	},
+	"required": ["serviceAccountCreds"],
+	"additionalProperties": false
+}
+`
 
 	bucketInstructionsMarkdown = `
 # Google Cloud Storage Bucket

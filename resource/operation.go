@@ -25,26 +25,25 @@ type EnvironmentVariable struct {
 
 // PaginationRequest contains pagination parameters for list operations
 type PaginationRequest struct {
-	Cursor string `json:"cursor,omitempty"`
-	PageSize int `json:"pageSize"`
+	Cursor   string `json:"cursor,omitempty"`
+	PageSize int    `json:"pageSize"`
 }
 
 // OperationRequest contains the input data for an operation on a resource.
 type OperationRequest struct {
-	Definition *Definition
-	// Metadata contains information about the Project and User making the request.
-	// This metadata does not contain information about the Resource being operated on.
-	Metadata *Metadata
-	// Resource is the resource being operated on, and contains the ExternalID of the resource,
-	// as well as the properties at the time of the request.
-	Resource *Resource
+	// Resource is resorce reference to the resource being operated on.
+	// This is used to identify the resource in external systems.
+	Resource *ResourceRef `json:"resource,omitempty"`
 	// Input contains the input data for the request, after it has been validated against the schema.
 	// Default values have already been applied to missing input properties.
-	Args map[string]any
+	Args map[string]any `json:"args,omitempty"`
 	// Environment contains the environment variables that are available to the operation.
-	Environment map[string]EnvironmentVariable
+	Environment map[string]EnvironmentVariable `json:"environment,omitempty"`
 	// Pagination contains pagination parameters for list operations
 	Pagination *PaginationRequest `json:"pagination,omitempty"`
+	// Credentials contains the credentials for the operation. 
+	// TODO: consider moving it to the context
+	Credentials map[string]any `json:"credentials,omitempty"`
 }
 
 // OperationResponse contains the output data for an operation on a resource.

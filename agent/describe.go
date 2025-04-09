@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"maps"
+
 	"github.com/tempestdx/sdk-go/resource"
 )
 
@@ -12,29 +14,30 @@ import (
 type OperationDescription struct {
 	Name             string           `json:"name"`
 	Args             json.RawMessage  `json:"args,omitempty"`
-	ActionConfig     map[string]any   `json:"action_config,omitempty"`
-	CanonicalBinding []map[string]any `json:"canonical_binding,omitempty"`
+	ActionConfig     map[string]any   `json:"actionConfig,omitempty"`
+	CanonicalBinding []map[string]any `json:"canonicalBinding,omitempty"`
 }
 
 // ResourceDescription represents a resource in the describe API response
 type ResourceDescription struct {
-	DisplayName          string                          `json:"display_name"`
-	UniqueID             string                          `json:"unique_id"`
-	LifecycleStage       string                          `json:"lifecycle_stage"`
-	PropertiesSchema     json.RawMessage                 `json:"properties_schema,omitempty"`
+	DisplayName          string                          `json:"displayName"`
+	UniqueID             string                          `json:"uniqueId"`
+	LifecycleStage       string                          `json:"lifecycleStage"`
+	PropertiesSchema     json.RawMessage                 `json:"propertiesSchema,omitempty"`
 	Categories           []string                        `json:"categories,omitempty"`
 	Links                []map[string]any                `json:"links,omitempty"`
-	InstructionsMarkdown string                          `json:"instructions_markdown,omitempty"`
+	Credentials          []map[string]any                `json:"credentials,omitempty"`
+	InstructionsMarkdown string                          `json:"instructionsMarkdown,omitempty"`
 	Operations           map[string]OperationDescription `json:"operations,omitempty"`
-	HealthcheckEnabled   bool                            `json:"healthcheck_enabled,omitempty"`
+	HealthcheckEnabled   bool                            `json:"healthcheckEnabled,omitempty"`
 }
 
 // AppDescription represents an app in the describe API response
 type AppDescription struct {
 	Name              string                         `json:"name"`
-	SupportedVersions []string                       `json:"supported_versions"`
+	Version           string                         `json:"version"`
 	Resources         map[string]ResourceDescription `json:"resources"`
-	CanonicalBindings json.RawMessage                `json:"canonical_bindings,omitempty"`
+	CanonicalBindings json.RawMessage                `json:"canonicalBindings,omitempty"`
 	Routes            json.RawMessage                `json:"routes,omitempty"`
 }
 
@@ -72,7 +75,11 @@ func (a *agent) buildDescribeResponse() map[string]AppDescription {
 
 	// Gather information from all registered apps
 	for appName, appConfig := range a.apps {
-		appDesc := buildAppDescription(appName, appConfig, a.logger)
+		routes := make(map[string]string)
+		maps.Copy(routes, appConfig.generateCanonicalRoutes())
+		maps.Copy(routes, appConfig.generateOperationRoutes())
+
+		appDesc := newAppDescription(appConfig, a.logger).withRoutes(routes, a.logger)
 		response[appName] = appDesc
 	}
 
@@ -80,27 +87,38 @@ func (a *agent) buildDescribeResponse() map[string]AppDescription {
 }
 
 // Helper functions that don't need agent access
-
-func buildAppDescription(appName string, appConfig *appConfig, logger *slog.Logger) AppDescription {
+func newAppDescription(appConfig *appConfig, logger *slog.Logger) AppDescription {
 	appDesc := AppDescription{
-		Name:              appName,
-		SupportedVersions: appConfig.SupportedVersions,
-		Resources:         make(map[string]ResourceDescription),
+		Name:      appConfig.Name,
+		Resources: make(map[string]ResourceDescription),
 	}
 
-	// Get resource definitions
+	if appConfig.Version != "" {
+		appDesc = appDesc.withVersion(appConfig.Version)
+	}
+
 	for _, resourceDef := range appConfig.ResourceDefinitions() {
 		resDesc := buildResourceDescription(resourceDef)
 		appDesc.Resources[resourceDef.UniqueID()] = resDesc
 	}
 
-	// Add canonical bindings
 	if len(appConfig.ResourceCanonicalMap) > 0 {
 		appDesc.CanonicalBindings = marshalCanonicalBindings(appConfig.ResourceCanonicalMap, logger)
 	}
 
-	// Add canonical routes information
-	routes := appConfig.generateCanonicalRoutes()
+	appConfig.generateCanonicalRoutes()
+
+	return appDesc
+}
+
+// withVersion adds version information to the app description
+func (appDesc AppDescription) withVersion(version string) AppDescription {
+	appDesc.Version = version
+
+	return appDesc
+}
+
+func (appDesc AppDescription) withRoutes(routes map[string]string, logger *slog.Logger) AppDescription {
 	if len(routes) > 0 {
 		appDesc.Routes = marshalData(routes, logger)
 	}
@@ -139,6 +157,11 @@ func buildResourceDescription(resourceDef *resource.Definition) ResourceDescript
 		resDesc.Links = convertLinks(links)
 	}
 
+	// Get credentials
+	if creds := resourceDef.Credentials(); len(creds) > 0 {
+		resDesc.Credentials = convertCredentials(creds)
+	}
+
 	return resDesc
 }
 
@@ -163,7 +186,7 @@ func buildOperationDescription(opName string, operation *resource.Operation) Ope
 		opDesc.ActionConfig = map[string]any{
 			"title":                 actionConfig.Title,
 			"description":           actionConfig.Description,
-			"requires_confirmation": actionConfig.RequiresConfirmation,
+			"requiresConfirmation":  actionConfig.RequiresConfirmation,
 		}
 	}
 
@@ -201,6 +224,19 @@ func convertLinks(links []resource.Link) []map[string]any {
 		}
 	}
 	return linksMaps
+}
+
+func convertCredentials(creds []resource.Credential) []map[string]any {
+	credsMaps := make([]map[string]any, len(creds))
+	for i, cred := range creds {
+		schemaJSON, _ := cred.Schema.Raw.MarshalJSON()
+		credsMaps[i] = map[string]any{
+			"name":   cred.Name,
+			"type":   string(cred.Type),
+			"schema": schemaJSON,
+		}
+	}
+	return credsMaps
 }
 
 func marshalCanonicalBindings(bindings resourceCanonicalBindings, logger *slog.Logger) json.RawMessage {

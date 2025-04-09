@@ -46,29 +46,29 @@ type resourceCanonicalBindings map[resourceName]map[resource.CanonicalType][]can
 
 type appConfig struct {
 	*app.App
-	SupportedVersions    []string
+	Version              string
 	ResourceCanonicalMap resourceCanonicalBindings
 }
 
 // Operation represents a work item to be executed
 type Operation struct {
-	TaskID        string                     `json:"task_id"`
-	AppName       string                     `json:"app_name"`
+	TaskID        string                     `json:"taskId"`
+	AppName       string                     `json:"appName"`
 	Version       string                     `json:"version"`
-	ResourceID    string                     `json:"resource_id"`
-	OperationName string                     `json:"operation_name"`
+	ResourceID    string                     `json:"resourceId"`
+	OperationName string                     `json:"operationName"`
 	Request       *resource.OperationRequest `json:"request"`
 }
 
 // OperationResult represents the result of an executed operation
 type OperationResult struct {
-	TaskID    string         `json:"task_id"`
+	TaskID    string         `json:"taskId"`
 	Status    string         `json:"status"`           // "completed", "failed"
 	Message   string         `json:"message"`          // Human-readable message
 	Error     string         `json:"error,omitempty"`  // Error details if failed
 	Output    map[string]any `json:"output,omitempty"` // Operation output data
-	StartTime time.Time      `json:"start_time"`
-	EndTime   time.Time      `json:"end_time"`
+	StartTime time.Time      `json:"startTime"`
+	EndTime   time.Time      `json:"endTime"`
 }
 
 // JSON-friendly canonical binding structures
@@ -233,18 +233,26 @@ func New(options ...Option) (*agent, error) {
 }
 
 // RegisterApp registers an app with the agent and sets up its HTTP routes
-func (a *agent) RegisterApp(app *app.App, supportedVersions []string) {
-	a.logger.Info("Registering app", "app_name", app.Name, "versions", supportedVersions)
+func (a *agent) RegisterApp(app *app.App) {
+	a.logger.Info("Registering app", "app_name", app.Name)
 
-	a.apps[app.Name] = &appConfig{
-		App:               app,
-		SupportedVersions: supportedVersions,
+	appConfig := &appConfig{
+		App: app,
 	}
 
+	appConfig.generateCanonicalBindings()
+
+	// Connect to Tempest API with app definitions
+	err := a.connectApp(appConfig)
+	if err != nil {
+		a.logger.Error("Failed to connect app", "app", app.Name, "error", err)
+		return
+	}
+	a.apps[app.Name] = appConfig
+
 	// Generate routes and canonical bindings
-	a.apps[app.Name].generateCanonicalBindings()
-	canonicalRoutes := a.apps[app.Name].generateCanonicalRoutes()
-	operationRoutes := a.apps[app.Name].generateOperationRoutes()
+	canonicalRoutes := appConfig.generateCanonicalRoutes()
+	operationRoutes := appConfig.generateOperationRoutes()
 
 	a.logger.Debug("Generated routes",
 		"app_name", app.Name,
@@ -352,9 +360,6 @@ func (a *agent) Start() error {
 		routes = append(routes, route)
 	}
 	a.logger.Info("Registered routes", "routes", routes)
-
-	// Connect to Tempest API with app definitions
-	a.connectApps()
 
 	// Initialize worker stop channel
 	a.workerStop = make(chan struct{})
@@ -966,14 +971,12 @@ func (ac *appConfig) generateCanonicalRoutes() map[string]string {
 
 		// Create a route for each canonical type and version
 		for canonicalType := range canonicalTypes {
-			for _, version := range ac.SupportedVersions {
-				// Convert CanonicalType to string name
-				typeStr := canonicalType.String()
-				if typeStr != "" {
-					// Remove "canonical/" from the path
-					routes[fmt.Sprintf("%s/%s/%s/%s", ac.Name, version, r.UniqueID(), typeStr)] =
-						fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
-				}
+			// Convert CanonicalType to string name
+			typeStr := canonicalType.String()
+			if typeStr != "" {
+				// Remove "canonical/" from the path
+				routes[fmt.Sprintf("%s/%s/%s/%s", ac.Name, ac.Version, r.UniqueID(), typeStr)] =
+					fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
 			}
 		}
 	}
@@ -1038,9 +1041,7 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 	}
 
 	// Create operation request
-	opReq := &resource.OperationRequest{
-		Metadata: &resource.Metadata{},
-	}
+	opReq := &resource.OperationRequest{}
 
 	// Check if this is the standard API format with nested "task" structure
 	if taskRaw, hasTask := rawData["task"]; hasTask {
@@ -1057,25 +1058,14 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 		// Map task.resource to Resource
 		if resourceRaw, hasResource := task["resource"].(map[string]any); hasResource {
 			// Create new resource instance
-			res := &resource.Resource{}
+			res := &resource.ResourceRef{}
 
 			// Map basic string fields
-			if id, ok := resourceRaw["id"].(string); ok {
+			if id, ok := resourceRaw["externalId"].(string); ok {
 				res.ExternalID = id
 			}
 			if name, ok := resourceRaw["name"].(string); ok {
 				res.Name = name
-			}
-			if displayName, ok := resourceRaw["display_name"].(string); ok {
-				res.DisplayName = displayName
-			}
-			if resType, ok := resourceRaw["type"].(string); ok {
-				res.Category = resource.Category(resType)
-			}
-
-			// Map properties
-			if props, ok := resourceRaw["properties"].(map[string]any); ok {
-				res.Properties = props
 			}
 
 			// Add resource to request
@@ -1083,7 +1073,7 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 		}
 
 		// Map task.environment_variables (if supported by OperationRequest)
-		if envVarsRaw, hasEnvVars := task["environment_variables"].([]any); hasEnvVars {
+		if envVarsRaw, hasEnvVars := task["environment"].([]any); hasEnvVars {
 			// Check if your OperationRequest has a field for environment variables
 			// If so, map them here
 			envVars := make(map[string]resource.EnvironmentVariable)
@@ -1099,50 +1089,14 @@ func parseOperationRequest(r *http.Request) (*resource.OperationRequest, string,
 			}
 			opReq.Environment = envVars
 		}
-
-		// Map task.metadata
-		if metadataRaw, hasMetadata := task["metadata"].(map[string]any); hasMetadata {
-			// Map relevant metadata fields
-			if taskID, ok := metadataRaw["task_id"].(string); ok {
-				opReq.Metadata.TaskID = taskID
-			}
-		}
 	} else {
 		// Direct format - treat the entire body as Args/input
 		opReq.Args = rawData
 	}
 
-	// Extract task_id from top level
-	if taskID, ok := rawData["task_id"].(string); ok {
-		opReq.Metadata.TaskID = taskID
-	}
-
-	// Map top-level metadata (might contain additional context)
-	if metadataRaw, hasMetadata := rawData["metadata"].(map[string]any); hasMetadata {
-		opReq.Metadata.Owners = []resource.Owner{}
-		// Extract author info
-		// TODO: Expand owner support to include all owners supported on server
-		if authorRaw, hasAuthor := metadataRaw["author"].(map[string]any); hasAuthor {
-			opReq.Metadata.Owners = append(opReq.Metadata.Owners, resource.Owner{
-				Email: authorRaw["email"].(string),
-				Name:  authorRaw["name"].(string),
-				Type:  resource.OwnerTypeUser,
-			})
-		}
-
-		// Extract project info
-		if projectID, ok := metadataRaw["project_id"].(string); ok {
-			opReq.Metadata.ProjectID = projectID
-		}
-		if projectName, ok := metadataRaw["project_name"].(string); ok {
-			opReq.Metadata.ProjectName = projectName
-		}
-	}
-
-	// Extract task ID for return value
 	taskID := ""
-	if opReq.Metadata != nil {
-		taskID = opReq.Metadata.TaskID
+	if id, ok := rawData["taskId"].(string); ok {
+		taskID = id
 	}
 
 	return opReq, taskID, nil
@@ -1163,10 +1117,8 @@ func (ac *appConfig) generateOperationRoutes() map[string]string {
 	for _, r := range ac.ResourceDefinitions() {
 		for _, op := range r.Operations() {
 			// generate a route per operation, resource, and supported version
-			for _, version := range ac.SupportedVersions {
-				routes[fmt.Sprintf("%s/%s/%s/operations/%s", ac.Name, version, r.UniqueID(), op.Name())] =
-					fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
-			}
+			routes[fmt.Sprintf("%s/%s/%s/operations/%s", ac.Name, ac.Version, r.UniqueID(), op.Name())] =
+				fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
 		}
 	}
 
@@ -1284,15 +1236,15 @@ func (a *agent) pollAndProcessTasks(registry *ResourceRegistry) error {
 	url := fmt.Sprintf("%s/apps.tasks", a.apiURL)
 
 	// Build request body with app names and supported versions
-	appVersions := make(map[string][]string)
+	appVersions := make(map[string]string)
 	for appName, appConfig := range a.apps {
-		appVersions[appName] = appConfig.SupportedVersions
+		appVersions[appName] = appConfig.Version
 	}
 
 	// Create the request body with supported_apps key and limit parameter
 	requestBody := map[string]any{
-		"supported_apps": appVersions,
-		"limit":          10,
+		"supportedApps": appVersions,
+		"limit":         10,
 	}
 
 	// Marshal the request body to JSON
@@ -1336,7 +1288,7 @@ func (a *agent) pollAndProcessTasks(registry *ResourceRegistry) error {
 	for _, task := range tasks {
 		if err := a.enqueueTaskToResourceQueue(registry, &task); err != nil {
 			logger.Error("Failed to enqueue task",
-				"task_id", task.TaskID,
+				"taskId", task.TaskID,
 				"app", task.AppName,
 				"resource", task.ResourceID,
 				"operation", task.OperationName,
@@ -1350,7 +1302,7 @@ func (a *agent) pollAndProcessTasks(registry *ResourceRegistry) error {
 // enqueueTaskToResourceQueue enqueues a task to its appropriate resource queue
 func (a *agent) enqueueTaskToResourceQueue(registry *ResourceRegistry, task *Operation) error {
 	logger := a.logger.With(
-		"task_id", task.TaskID,
+		"taskId", task.TaskID,
 		"app", task.AppName,
 		"resource", task.ResourceID,
 		"operation", task.OperationName)
@@ -1450,7 +1402,7 @@ func (a *agent) startResourcePoller(ctx context.Context, appName, version, resou
 
 			// Process the operation
 			logger.Debug("Processing operation",
-				"task_id", op.TaskID,
+				"taskId", op.TaskID,
 				"operation", op.OperationName)
 
 			go a.processOperation(op)
@@ -1489,7 +1441,7 @@ func (a *agent) processOperation(op *Operation) {
 	}
 
 	logger := a.logger.With(
-		"task_id", op.TaskID,
+		"taskId", op.TaskID,
 		"app", op.AppName,
 		"resource", op.ResourceID,
 		"operation", op.OperationName)
@@ -1520,7 +1472,7 @@ func (a *agent) reportOperationError(op *Operation, errMsg string) {
 	// Queue result for reporting
 	if !a.resultQueue.Enqueue(result) {
 		a.logger.Error("Failed to enqueue error result (queue might be closed)",
-			"task_id", op.TaskID,
+			"taskId", op.TaskID,
 			"error", errMsg)
 	}
 }
@@ -1530,7 +1482,7 @@ func (a *agent) executeOperation(op *Operation) *OperationResult {
 	startTime := time.Now()
 
 	logger := a.logger.With(
-		"task_id", op.TaskID,
+		"taskId", op.TaskID,
 		"app", op.AppName,
 		"resource", op.ResourceID,
 		"operation", op.OperationName)
@@ -1639,60 +1591,76 @@ func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
 }
 
 // connectApps sends the app definitions to the Tempest API for connection
-func (a *agent) connectApps() {
+func (a *agent) connectApp(appConfig *appConfig) error {
 	if a.apiKey == "" {
 		a.logger.Warn("No API key provided, skipping app connection")
-		return
+		return fmt.Errorf("no API key provided")
 	}
 
 	a.logger.Info("Connecting apps to Tempest API")
 
 	// Build app definitions from describe response
-	appDefinitions := a.buildDescribeResponse()
+	appDefinition := newAppDescription(appConfig, a.logger)
 
-	for appName, appDefinition := range appDefinitions {
-		a.logger.Debug("Connecting app to Tempest API", "app", appName)
+	a.logger.Debug("Connecting app to Tempest API", "app", appConfig.Name)
 
-		// Create the request URL
-		url := fmt.Sprintf("%s/apps.version.connect", a.apiURL)
+	// Create the request URL
+	url := fmt.Sprintf("%s/apps.version.connect", a.apiURL)
 
-		// Marshal the app definition to JSON
-		data, err := json.Marshal(appDefinition)
-		if err != nil {
-			a.logger.Error("Failed to marshal app definition", "app", appName, "error", err)
-			continue
-		}
-
-		// Create the HTTP request
-		req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
-		if err != nil {
-			a.logger.Error("Failed to create app connection request", "app", appName, "error", err)
-			continue
-		}
-
-		// Add headers
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+a.apiKey)
-
-		// Execute the request
-		resp, err := a.httpClient.Do(req)
-		if err != nil {
-			a.logger.Error("Failed to connect app", "app", appName, "error", err)
-			continue
-		}
-
-		// Check response status
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			a.logger.Error("Failed to connect app",
-				"app", appName,
-				"status", resp.StatusCode,
-				"response", string(body))
-			resp.Body.Close()
-			continue
-		}
-
-		resp.Body.Close()
-		a.logger.Info("Successfully connected app to Tempest API", "app", appName)
+	// Marshal the app definition to JSON
+	data, err := json.Marshal(appDefinition)
+	if err != nil {
+		return fmt.Errorf("failed to marshal app definition: %w", err)
 	}
+
+	// Create the HTTP request
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		return fmt.Errorf("failed to create app connection request: %w", err)
+	}
+
+	// Add headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.apiKey)
+
+	// Execute the request
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to connect app: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to connect app: status code %d - %s", resp.StatusCode, string(body))
+	}
+
+	// Parse the API response to get the app version
+	var apiResponse struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Data    struct {
+			Version string `json:"version"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&apiResponse); err != nil {
+		a.logger.Error("Failed to decode API response", "app", appConfig.Name, "error", err)
+		return fmt.Errorf("failed to decode API response: %w", err)
+	}
+	fmt.Println("apiResponse", apiResponse)
+	if apiResponse.Data.Version != "" {
+		appConfig.Version = apiResponse.Data.Version
+		a.logger.Info("App connected successfully with version",
+			"app", appConfig.Name,
+			"version", appConfig.Version)
+	} else {
+		// If no version was returned in the response, log a warning
+		a.logger.Error("App connected but no version was returned, this is unexpected",
+			"app", appConfig.Name,
+			"message", apiResponse.Message)
+	}
+
+	return nil
 }

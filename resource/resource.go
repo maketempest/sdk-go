@@ -1,9 +1,14 @@
 package resource
 
-// Resource represents a generic resource with properties and links.
-type Resource struct {
+// ResourceRef is a reference to a resource.
+type ResourceRef struct {
 	ExternalID  string         `json:"externalId"`
 	Name        string         `json:"name"`
+	// TODO: consider Links here
+}
+// Resource represents a generic resource with properties and links.
+type Resource struct {
+	ResourceRef
 	DisplayName string         `json:"displayName"`
 	Properties  map[string]any `json:"properties"`
 	Category    Category       `json:"category"`
@@ -25,6 +30,7 @@ type Pagination struct {
 }
 
 // ResponseData is an interface to group *Resource and *ResourceCollection
+// This is used in the OperationResponse struct to allow for a single type for the data field.
 type ResponseData interface {
 	IsResponseData()
 }

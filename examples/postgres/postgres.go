@@ -11,7 +11,7 @@ import (
 	"github.com/tempestdx/sdk-go/agent"
 	"github.com/tempestdx/sdk-go/app"
 	"github.com/tempestdx/sdk-go/jsonschema"
-	"github.com/tempestdx/sdk-go/resource"
+	resources "github.com/tempestdx/sdk-go/resource"
 )
 
 const pgdbInstructionsMarkdown = `
@@ -56,55 +56,73 @@ const pgdbCreateArgsSchema = `
 	"additionalProperties": false
 }`
 
-func pgdbHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, error) {
-	return &resource.HealthCheckResponse{
-		Status: resource.HealthCheckStatusHealthy,
+func pgdbHealthCheck(ctx context.Context) (*resources.HealthCheckResponse, error) {
+	return &resources.HealthCheckResponse{
+		Status: resources.HealthCheckStatusHealthy,
 	}, nil
 }
 
 // First create operation with priority 100
-func pgdbCreatePrepare(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
+func pgdbCreatePrepare(ctx context.Context, req *resources.OperationRequest) (*resources.OperationResponse, error) {
 	fmt.Println("[Priority 100] Preparing to create PostgreSQL database...")
 	fmt.Println(req.Args["name"])
-	return resource.NewSingleResourceResponse(req.Resource, "Operation completed successfully", nil), nil
+	resource := resources.Resource{
+		ResourceRef: resources.ResourceRef{
+			ExternalID: req.Resource.ExternalID,
+			Name:       req.Resource.Name,
+		},
+	}
+	return resources.NewSingleResourceResponse(&resource, "Operation completed successfully", nil), nil
 }
 
 // Second create operation with priority 100 (will run after the first one due to registration order)
-func pgdbCreateValidate(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
+func pgdbCreateValidate(ctx context.Context, req *resources.OperationRequest) (*resources.OperationResponse, error) {
 	fmt.Println("[Priority 100] Validating PostgreSQL database parameters...")
 	fmt.Println(req.Args["name"])
+	resource := resources.Resource{
+		ResourceRef: resources.ResourceRef{
+			ExternalID: req.Resource.ExternalID,
+			Name:       req.Resource.Name,
+		},
+	}
 
-	return resource.NewSingleResourceResponse(req.Resource, "Operation completed successfully", nil), nil
+	return resources.NewSingleResourceResponse(&resource, "Operation completed successfully", nil), nil
 }
 
 // Main create operation with priority 200 (will run last)
-func pgdbCreate(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
+func pgdbCreate(ctx context.Context, req *resources.OperationRequest) (*resources.OperationResponse, error) {
 	fmt.Println("[Priority 200] Creating PostgreSQL database...")
 
 	fmt.Println(req.Args["name"])
-	return resource.NewSingleResourceResponse(req.Resource, "Operation completed successfully", nil), nil
+	resource := resources.Resource{
+		ResourceRef: resources.ResourceRef{
+			ExternalID: req.Resource.ExternalID,
+			Name:       req.Resource.Name,
+		},
+	}
+	return resources.NewSingleResourceResponse(&resource, "Operation completed successfully", nil), nil
 }
 
 func main() {
 	// Create the PostgreSQL database resource definition
-	pgdb, err := resource.NewDefinition(
-		resource.DefinitionConfig{
+	pgdb, err := resources.NewDefinition(
+		resources.DefinitionConfig{
 			DisplayName:    "Database",
 			UniqueID:       "postgres.database",
 			Properties:     jsonschema.MustParseSchema([]byte(pgdbResourceSchema)),
-			LifecycleStage: resource.LifecycleStageDeploy,
+			LifecycleStage: resources.LifecycleStageDeploy,
 		},
-		resource.WithHealthCheck(pgdbHealthCheck),
-		resource.WithDefaultLinks(
-			resource.Link{
+		resources.WithHealthCheck(pgdbHealthCheck),
+		resources.WithDefaultLinks(
+			resources.Link{
 				Title:    "PostgreSQL Documentation: CREATE DATABASE",
 				URL:      "https://www.postgresql.org/docs/current/sql-createdatabase.html",
-				Type:     resource.LinkTypeWebsite,
-				Category: resource.LinkCategoryDocumentation,
+				Type:     resources.LinkTypeWebsite,
+				Category: resources.LinkCategoryDocumentation,
 			},
 		),
-		resource.WithInstructions(pgdbInstructionsMarkdown),
-		resource.WithCategories(resource.CategoryDatabase),
+		resources.WithInstructions(pgdbInstructionsMarkdown),
+		resources.WithCategories(resources.CategoryDatabase),
 	)
 	if err != nil {
 		panic(err)
@@ -116,9 +134,9 @@ func main() {
 	pgdb.RegisterOperation(
 		"create_prep",
 		pgdbCreatePrepare,
-		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
-		resource.Op.On(resource.CanonicalOperation{
-			Type:        resource.Create,
+		resources.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
+		resources.Op.On(resources.CanonicalOperation{
+			Type:        resources.Create,
 			Priority:    100,
 			Concurrency: 1,
 		}),
@@ -128,9 +146,9 @@ func main() {
 	pgdb.RegisterOperation(
 		"create_validate",
 		pgdbCreateValidate,
-		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
-		resource.Op.On(resource.CanonicalOperation{
-			Type:        resource.Create,
+		resources.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
+		resources.Op.On(resources.CanonicalOperation{
+			Type:        resources.Create,
 			Priority:    100,
 			Concurrency: 1,
 		}),
@@ -140,13 +158,13 @@ func main() {
 	pgdb.RegisterOperation(
 		"create_db",
 		pgdbCreate,
-		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
-		resource.Op.On(resource.CanonicalOperation{
-			Type:        resource.Create,
+		resources.Op.WithArgs(jsonschema.MustParseSchema([]byte(pgdbCreateArgsSchema))),
+		resources.Op.On(resources.CanonicalOperation{
+			Type:        resources.Create,
 			Priority:    200,
 			Concurrency: 1,
 		}),
-		resource.Op.EnableAction(resource.ActionConfig{
+		resources.Op.EnableAction(resources.ActionConfig{
 			Title:                "Create Database",
 			Description:          "Create a new PostgreSQL database.",
 			RequiresConfirmation: true,
@@ -206,7 +224,7 @@ func main() {
 
 	// Register the PostgreSQL app with the agent
 	// The second parameter defines which versions of the app the agent supports
-	agentInstance.RegisterApp(pg, []string{"v1"})
+	agentInstance.RegisterApp(pg)
 
 	fmt.Println("Starting PostgreSQL agent on port 8080...")
 	if err := agentInstance.Run(); err != nil {

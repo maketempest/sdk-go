@@ -152,7 +152,7 @@ func (q *Queue) IsClosed() bool {
 // Process starts processing items from the queue using the provided function.
 // It returns a channel that is closed when processing completes.
 // Processing completes when the queue is closed and all items have been processed.
-func (q *Queue) Process(processor func(interface{}) error) <-chan struct{} {
+func (q *Queue) Process(processor func(any) error) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

@@ -10,7 +10,7 @@ import (
 
 	"github.com/tempestdx/sdk-go/agent"
 	"github.com/tempestdx/sdk-go/app"
-	"github.com/tempestdx/sdk-go/examples/googlecloud/resources"
+	googlecloud "github.com/tempestdx/sdk-go/examples/googlecloud/resources"
 )
 
 func main() {
@@ -34,9 +34,11 @@ func main() {
 	// Create and configure the agent
 	agentInstance, err := agent.New(
 		agent.WithServerAddr(":8080"),
-		agent.WithWorkers(5),
-		agent.WithResultWorkers(2),
-		agent.WithPollTimeout(100*time.Millisecond),
+		agent.WithAPIKey("API_KEY"),
+		agent.WithAPIURL("http://localhost:8040"),
+		agent.WithWorkers(1),
+		agent.WithResultWorkers(1),
+		agent.WithPollTimeout(5*time.Second),
 		agent.WithLogger(slog.New(
 			slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 				Level: slog.LevelInfo,
@@ -48,7 +50,7 @@ func main() {
 	}
 
 	// Register the Google Cloud app with the agent
-	agentInstance.RegisterApp(googleCloudApp, []string{"v1"})
+	agentInstance.RegisterApp(googleCloudApp)
 
 	fmt.Println("Starting Google Cloud agent on port 8080...")
 	if err := agentInstance.Run(); err != nil {

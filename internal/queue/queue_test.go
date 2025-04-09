@@ -212,7 +212,7 @@ func TestProcess(t *testing.T) {
 	var processMutex sync.Mutex
 
 	// Start processing
-	done := q.Process(func(item interface{}) error {
+	done := q.Process(func(item any) error {
 		val := item.(int)
 		processMutex.Lock()
 		processed = append(processed, val)

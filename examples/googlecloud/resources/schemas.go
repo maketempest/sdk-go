@@ -58,21 +58,6 @@ const (
 	"additionalProperties": false
 }`
 
-	bucketCredentialsSchema = `
-{
-	"type": "object",
-	"properties": {
-		"serviceAccountCreds": {
-			"title": "Service Account Credentials",
-			"description": "The service account credentials for the Google Cloud Storage API.",
-			"type": "string"
-		}
-	},
-	"required": ["serviceAccountCreds"],
-	"additionalProperties": false
-}
-`
-
 	bucketInstructionsMarkdown = `
 # Google Cloud Storage Bucket
 

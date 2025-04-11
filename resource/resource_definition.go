@@ -27,7 +27,7 @@ type Definition struct {
 	lifecycleStage       LifecycleStage
 	categories           []Category
 	links                []Link
-	credentials          []Credential
+	credentials          []string
 	properties           *jsonschema.Schema
 	instructionsMarkdown string
 
@@ -98,13 +98,6 @@ func NewDefinition(config DefinitionConfig, opts ...resourceDefinitionOption) (*
 		return nil, errors.New("properties are required")
 	}
 
-	// validate credentials
-	for _, credential := range r.credentials {
-		credential.setDefault()
-		if !credential.isValid() {
-			return nil, errors.New("invalid credential")
-		}
-	}
 
 	// parse properties
 	if _, err := jsonschema.ParseSchema(r.properties.Raw); err != nil {
@@ -151,7 +144,7 @@ func WithCategories(categories ...Category) resourceDefinitionOption {
 	}
 }
 
-func WithCredentials(creds ...Credential) resourceDefinitionOption {
+func WithCredentials(creds ...string) resourceDefinitionOption {
 	return func(r *Definition) {
 		r.credentials = creds
 	}
@@ -247,7 +240,7 @@ func (r *Definition) Links() []Link {
 }
 
 // Credentials returns the credentials associated with the resource
-func (r *Definition) Credentials() []Credential {
+func (r *Definition) Credentials() []string {
 	return r.credentials
 }
 

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/tempestdx/sdk-go/app"
+	"github.com/tempestdx/sdk-go/credential"
 	"github.com/tempestdx/sdk-go/internal/queue"
 	"github.com/tempestdx/sdk-go/resource"
 )
@@ -84,28 +85,29 @@ type jsonOperationMetadata struct {
 
 // agent is the central handler for application operations
 type agent struct {
-	apiKey         string
-	apps           map[string]*appConfig
-	resourceQueues *queue.ResourceQueueManager   // Manager for per-resource operation queues
-	resultQueue    *queue.Queue                  // Queue for operation results
-	pollers        map[string]context.CancelFunc // Map of poller cancel functions keyed by "appName/resourceID"
-	pollersMutex   sync.RWMutex                  // Mutex to protect the pollers map
-	server         *http.Server
-	mux            *http.ServeMux
-	routes         map[string]http.Handler
-	workers        int
-	resultWorkers  int
-	workerTracker  *WorkerTracker // Tracks worker goroutines
-	resultTracker  *WorkerTracker // Tracks result reporter goroutines
-	workerStop     chan struct{}
-	resultStop     chan struct{}
-	httpClient     *http.Client // Client for API requests
-	apiURL         string       // Base URL for Tempest API
-	logger         *slog.Logger // Logger for agent operations
-	pollTimeout    time.Duration
-	stopOptions    StopOptions // Default options for stopping the agent
-	shutdownMutex  sync.Mutex  // Protects shutdown process
-	isShutdown     bool        // Tracks if shutdown has been called
+	apiKey              string
+	apps                map[string]*appConfig
+	credentialProviders map[string]*credential.CredentialProvider
+	resourceQueues      *queue.ResourceQueueManager   // Manager for per-resource operation queues
+	resultQueue         *queue.Queue                  // Queue for operation results
+	pollers             map[string]context.CancelFunc // Map of poller cancel functions keyed by "appName/resourceID"
+	pollersMutex        sync.RWMutex                  // Mutex to protect the pollers map
+	server              *http.Server
+	mux                 *http.ServeMux
+	routes              map[string]http.Handler
+	workers             int
+	resultWorkers       int
+	workerTracker       *WorkerTracker // Tracks worker goroutines
+	resultTracker       *WorkerTracker // Tracks result reporter goroutines
+	workerStop          chan struct{}
+	resultStop          chan struct{}
+	httpClient          *http.Client // Client for API requests
+	apiURL              string       // Base URL for Tempest API
+	logger              *slog.Logger // Logger for agent operations
+	pollTimeout         time.Duration
+	stopOptions         StopOptions // Default options for stopping the agent
+	shutdownMutex       sync.Mutex  // Protects shutdown process
+	isShutdown          bool        // Tracks if shutdown has been called
 }
 
 // QueueOptions configures the operation queue
@@ -192,27 +194,28 @@ func New(options ...Option) (*agent, error) {
 
 	// Create the agent
 	a := &agent{
-		apiKey:         apiKey,
-		apps:           make(map[string]*appConfig),
-		resultQueue:    queue.NewQueue(1000),
-		pollers:        make(map[string]context.CancelFunc),
-		server:         server,
-		mux:            mux,
-		routes:         make(map[string]http.Handler),
-		workers:        workers,
-		resultWorkers:  resultWorkers,
-		workerTracker:  workerTracker,
-		resultTracker:  resultTracker,
-		workerStop:     make(chan struct{}),
-		resultStop:     make(chan struct{}),
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
-		apiURL:         apiURL,
-		logger:         logger,
-		pollTimeout:    pollTimeout,
-		stopOptions:    DefaultStopOptions,
-		shutdownMutex:  sync.Mutex{},
-		isShutdown:     false,
-		resourceQueues: queue.NewResourceQueueManager(),
+		apiKey:              apiKey,
+		apps:                make(map[string]*appConfig),
+		credentialProviders: make(map[string]*credential.CredentialProvider),
+		resultQueue:         queue.NewQueue(1000),
+		pollers:             make(map[string]context.CancelFunc),
+		server:              server,
+		mux:                 mux,
+		routes:              make(map[string]http.Handler),
+		workers:             workers,
+		resultWorkers:       resultWorkers,
+		workerTracker:       workerTracker,
+		resultTracker:       resultTracker,
+		workerStop:          make(chan struct{}),
+		resultStop:          make(chan struct{}),
+		httpClient:          &http.Client{Timeout: 30 * time.Second},
+		apiURL:              apiURL,
+		logger:              logger,
+		pollTimeout:         pollTimeout,
+		stopOptions:         DefaultStopOptions,
+		shutdownMutex:       sync.Mutex{},
+		isShutdown:          false,
+		resourceQueues:      queue.NewResourceQueueManager(),
 	}
 
 	// Create resource registry
@@ -230,6 +233,23 @@ func New(options ...Option) (*agent, error) {
 	a.registerDefaultHandlers()
 
 	return a, nil
+}
+
+// RegisterCredentials registers credentials for an app
+func (a *agent) RegisterCredentials(credentials *credential.CredentialProvider) {
+	a.logger.Info("Registering credentials", "credentials", credentials)
+
+	err := a.connectCredentials(credentials)
+
+	if err != nil {
+		a.logger.Error("Failed to connect credentials", "error", err)
+		return
+	}
+
+	a.credentialProviders[credentials.Name] = credentials
+
+	a.logger.Info("Credentials registered", "credentials", credentials)
+
 }
 
 // RegisterApp registers an app with the agent and sets up its HTTP routes
@@ -1588,6 +1608,46 @@ func extractOutputFromResponseData(data resource.ResponseData) map[string]any {
 	}
 
 	return outputMap
+}
+
+// connectCredentials connects credentials to the agent
+func (a *agent) connectCredentials(credentials *credential.CredentialProvider) error {
+	if a.apiKey == "" {
+		a.logger.Warn("No API key provided, skipping credentials connection")
+		return fmt.Errorf("no API key provided")
+	}
+
+	a.logger.Info("Connecting credentials", "credentials", credentials)
+
+	credentialDefinition := newCredentialDescription(credentials)
+
+	url := fmt.Sprintf("%s/credentialProviders.connect", a.apiURL)
+
+	data, err := json.Marshal(credentialDefinition)
+	if err != nil {
+		return fmt.Errorf("failed to marshal credential definition: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	if err != nil {
+		return fmt.Errorf("failed to create credential provider connection request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+a.apiKey)
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to connect credential provider: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to connect credential provider: status code %d - %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // connectApps sends the app definitions to the Tempest API for connection

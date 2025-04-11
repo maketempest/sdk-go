@@ -7,6 +7,7 @@ import (
 
 	"maps"
 
+	"github.com/tempestdx/sdk-go/credential"
 	"github.com/tempestdx/sdk-go/resource"
 )
 
@@ -18,6 +19,13 @@ type OperationDescription struct {
 	CanonicalBinding []map[string]any `json:"canonicalBinding,omitempty"`
 }
 
+// CredentialDescription represents a credential in the describe API response
+type CredentialDescription struct {
+	Name   string          `json:"name"`
+	Type   string          `json:"type"`
+	Schema json.RawMessage `json:"schema"`
+}
+
 // ResourceDescription represents a resource in the describe API response
 type ResourceDescription struct {
 	DisplayName          string                          `json:"displayName"`
@@ -26,7 +34,7 @@ type ResourceDescription struct {
 	PropertiesSchema     json.RawMessage                 `json:"propertiesSchema,omitempty"`
 	Categories           []string                        `json:"categories,omitempty"`
 	Links                []map[string]any                `json:"links,omitempty"`
-	Credentials          []map[string]any                `json:"credentials,omitempty"`
+	Credentials          []string                        `json:"credentials,omitempty"`
 	InstructionsMarkdown string                          `json:"instructionsMarkdown,omitempty"`
 	Operations           map[string]OperationDescription `json:"operations,omitempty"`
 	HealthcheckEnabled   bool                            `json:"healthcheckEnabled,omitempty"`
@@ -37,8 +45,14 @@ type AppDescription struct {
 	Name              string                         `json:"name"`
 	Version           string                         `json:"version"`
 	Resources         map[string]ResourceDescription `json:"resources"`
+	Credentials       []string                       `json:"credentials,omitempty"`
 	CanonicalBindings json.RawMessage                `json:"canonicalBindings,omitempty"`
 	Routes            json.RawMessage                `json:"routes,omitempty"`
+}
+
+type describeResponse struct {
+	Apps                map[string]AppDescription        `json:"apps"`
+	CredentialProviders map[string]CredentialDescription `json:"credentialProviders"`
 }
 
 // registerDescribeHandler registers a handler to describe all registered resources and operations
@@ -70,8 +84,11 @@ func (a *agent) handleDescribeRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *agent) buildDescribeResponse() map[string]AppDescription {
-	response := make(map[string]AppDescription)
+func (a *agent) buildDescribeResponse() describeResponse {
+	response := describeResponse{
+		Apps:                map[string]AppDescription{},
+		CredentialProviders: map[string]CredentialDescription{},
+	}
 
 	// Gather information from all registered apps
 	for appName, appConfig := range a.apps {
@@ -80,10 +97,23 @@ func (a *agent) buildDescribeResponse() map[string]AppDescription {
 		maps.Copy(routes, appConfig.generateOperationRoutes())
 
 		appDesc := newAppDescription(appConfig, a.logger).withRoutes(routes, a.logger)
-		response[appName] = appDesc
+		response.Apps[appName] = appDesc
+	}
+
+	// Gather information from all registered credential providers
+	for providerName, credentialProvider := range a.credentialProviders {
+		response.CredentialProviders[providerName] = newCredentialDescription(credentialProvider)
 	}
 
 	return response
+}
+
+func newCredentialDescription(credentials *credential.CredentialProvider) CredentialDescription {
+	return CredentialDescription{
+		Name:   credentials.Name,
+		Type:   string(credentials.Type),
+		Schema: credentials.Schema.Raw,
+	}
 }
 
 // Helper functions that don't need agent access
@@ -95,6 +125,10 @@ func newAppDescription(appConfig *appConfig, logger *slog.Logger) AppDescription
 
 	if appConfig.Version != "" {
 		appDesc = appDesc.withVersion(appConfig.Version)
+	}
+
+	if len(appConfig.Credentials()) > 0 {
+		appDesc.Credentials = appConfig.Credentials()
 	}
 
 	for _, resourceDef := range appConfig.ResourceDefinitions() {
@@ -159,7 +193,7 @@ func buildResourceDescription(resourceDef *resource.Definition) ResourceDescript
 
 	// Get credentials
 	if creds := resourceDef.Credentials(); len(creds) > 0 {
-		resDesc.Credentials = convertCredentials(creds)
+		resDesc.Credentials = creds
 	}
 
 	return resDesc
@@ -184,9 +218,9 @@ func buildOperationDescription(opName string, operation *resource.Operation) Ope
 	// Get action config if available
 	if actionConfig := operation.ActionConfig(); actionConfig != nil {
 		opDesc.ActionConfig = map[string]any{
-			"title":                 actionConfig.Title,
-			"description":           actionConfig.Description,
-			"requiresConfirmation":  actionConfig.RequiresConfirmation,
+			"title":                actionConfig.Title,
+			"description":          actionConfig.Description,
+			"requiresConfirmation": actionConfig.RequiresConfirmation,
 		}
 	}
 
@@ -224,19 +258,6 @@ func convertLinks(links []resource.Link) []map[string]any {
 		}
 	}
 	return linksMaps
-}
-
-func convertCredentials(creds []resource.Credential) []map[string]any {
-	credsMaps := make([]map[string]any, len(creds))
-	for i, cred := range creds {
-		schemaJSON, _ := cred.Schema.Raw.MarshalJSON()
-		credsMaps[i] = map[string]any{
-			"name":   cred.Name,
-			"type":   string(cred.Type),
-			"schema": schemaJSON,
-		}
-	}
-	return credsMaps
 }
 
 func marshalCanonicalBindings(bindings resourceCanonicalBindings, logger *slog.Logger) json.RawMessage {

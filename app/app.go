@@ -11,6 +11,7 @@ import (
 type App struct {
 	Name         string
 	resourceDefs map[string]*resource.Definition
+	credentials  []string
 }
 
 func (a *App) ResourceDefinitions() map[string]*resource.Definition {
@@ -55,6 +56,17 @@ func WithResource(r *resource.Definition) OptFunc {
 
 		return nil
 	}
+}
+
+func WithCredentials(credentials []string) OptFunc {
+	return func(a *App) error {
+		a.credentials = credentials
+		return nil
+	}
+}
+
+func (a *App) Credentials() []string {
+	return a.credentials
 }
 
 func (a *App) Resources() map[string]*resource.Definition {

@@ -15,7 +15,8 @@ import (
 // For simplicity in this example, we're using hardcoded values
 // In a real implementation, these would be properly managed
 var (
-	projectID           = "tempest-sandbox"
+	projectID          = "tempest-sandbox"
+	saApikeyKey        = "google-cloud-storage-api-key"
 )
 
 func bucketToResource(bucket *storage.BucketAttrs) *resource.Resource {
@@ -59,7 +60,7 @@ func bucketHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, erro
 }
 
 func createBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials["google-cloud-storage-api-key"].(string))
+	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
 
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
@@ -107,7 +108,7 @@ func createBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 }
 
 func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials["google-cloud-storage-api-key"].(string))
+	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
@@ -153,7 +154,7 @@ func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource
 }
 
 func readBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials["google-cloud-storage-api-key"].(string))
+	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
@@ -184,7 +185,7 @@ func deleteBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 		return nil, fmt.Errorf("resource is nil")
 	}
 
-	opt, err := getAuthOption(req.Credentials["google-cloud-storage-api-key"].(string))
+	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
@@ -230,13 +231,7 @@ func NewBucketDefinition() (*resource.Definition, error) {
 		),
 		resource.WithInstructions(bucketInstructionsMarkdown),
 		resource.WithCategories(resource.CategoryStorage),
-		resource.WithCredentials(
-			resource.Credential{
-				Name:   "google-cloud-storage-api-key",
-				Type:   resource.CredentialTypeAPIKey,
-				Schema: jsonschema.MustParseSchema([]byte(bucketCredentialsSchema)),
-			},
-		),
+		resource.WithCredentials(saApikeyKey),
 	)
 	if err != nil {
 		return nil, err

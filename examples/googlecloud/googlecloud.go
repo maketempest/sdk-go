@@ -10,12 +10,13 @@ import (
 
 	"github.com/tempestdx/sdk-go/agent"
 	"github.com/tempestdx/sdk-go/app"
-	googlecloud "github.com/tempestdx/sdk-go/examples/googlecloud/resources"
+	credentials "github.com/tempestdx/sdk-go/examples/googlecloud/credentials"
+	resources "github.com/tempestdx/sdk-go/examples/googlecloud/resources"
 )
 
 func main() {
 	// Create the bucket resource definition
-	bucketDef, err := googlecloud.NewBucketDefinition()
+	bucketDef, err := resources.NewBucketDefinition()
 	if err != nil {
 		panic(err)
 	}
@@ -31,10 +32,12 @@ func main() {
 		panic(err)
 	}
 
+	serviceAccountCredentialProvider := credentials.NewServiceAccountCredentialProvider()
+
 	// Create and configure the agent
 	agentInstance, err := agent.New(
 		agent.WithServerAddr(":8080"),
-		agent.WithAPIKey("API_KEY"),
+		agent.WithAPIKey("tempest-api-key"),
 		agent.WithAPIURL("http://localhost:8040"),
 		agent.WithWorkers(1),
 		agent.WithResultWorkers(1),
@@ -51,6 +54,7 @@ func main() {
 
 	// Register the Google Cloud app with the agent
 	agentInstance.RegisterApp(googleCloudApp)
+	agentInstance.RegisterCredentials(serviceAccountCredentialProvider)
 
 	fmt.Println("Starting Google Cloud agent on port 8080...")
 	if err := agentInstance.Run(); err != nil {

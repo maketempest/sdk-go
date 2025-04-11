@@ -131,6 +131,7 @@ func main() {
 	// Register multiple operations for create canonical type with different priorities
 
 	// Preparation step - Priority 100
+	// TODO: What in case when single canonical operation has different credentials? Which one will be used?
 	pgdb.RegisterOperation(
 		"create_prep",
 		pgdbCreatePrepare,

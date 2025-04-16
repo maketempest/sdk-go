@@ -43,7 +43,7 @@ type OperationRequest struct {
 	Pagination *PaginationRequest `json:"pagination,omitempty"`
 	// Credentials contains the credentials for the operation. 
 	// TODO: consider moving it to the context
-	Credentials map[string]any `json:"credentials,omitempty"`
+	Credentials *Credential `json:"credentials,omitempty"`
 }
 
 // OperationResponse contains the output data for an operation on a resource.
@@ -54,6 +54,11 @@ type OperationResponse struct {
 	Error error `json:"error,omitempty"`
 	// Message is the message of the operation.
 	Message string `json:"message,omitempty"`
+}
+
+type Credential struct {
+	Type   string         `json:"type"`
+	Values map[string]any `json:"values"`
 }
 
 // NewSingleResourceResponse creates an operation response for a single resource.

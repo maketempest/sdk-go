@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/tempestdx/sdk-go/datasource"
 	"github.com/tempestdx/sdk-go/resource"
 )
 
 type App struct {
 	Name         string
 	resourceDefs map[string]*resource.Definition
+	datasourceDefs map[string]*datasource.Definition
 	credentials  []string
 }
 
@@ -19,6 +21,13 @@ func (a *App) ResourceDefinitions() map[string]*resource.Definition {
 	resourceDefsCopy := make(map[string]*resource.Definition, len(a.resourceDefs))
 	maps.Copy(resourceDefsCopy, a.resourceDefs)
 	return resourceDefsCopy
+}
+
+func (a *App) DataSourceDefinitions() map[string]*datasource.Definition {
+	// returns a copy of the datasource definitions
+	datasourceDefsCopy := make(map[string]*datasource.Definition, len(a.datasourceDefs))
+	maps.Copy(datasourceDefsCopy, a.datasourceDefs)
+	return datasourceDefsCopy
 }
 
 type OptFunc func(*App) error
@@ -31,6 +40,7 @@ func New(config Config, opts ...OptFunc) (*App, error) {
 	a := &App{
 		Name:         config.Name,
 		resourceDefs: make(map[string]*resource.Definition),
+		datasourceDefs: make(map[string]*datasource.Definition),
 	}
 
 	for _, opt := range opts {
@@ -53,6 +63,18 @@ func WithResource(r *resource.Definition) OptFunc {
 			return fmt.Errorf("resource %s already exists", r.UniqueID())
 		}
 		a.resourceDefs[r.UniqueID()] = r
+
+		return nil
+	}
+}
+
+func WithDataSource(d *datasource.Definition) OptFunc {
+	return func(a *App) error {
+		// Check if the datasource name is already in use
+		if _, ok := a.datasourceDefs[d.UniqueID()]; ok {
+			return fmt.Errorf("datasource %s already exists", d.UniqueID())
+		}
+		a.datasourceDefs[d.UniqueID()] = d
 
 		return nil
 	}
@@ -95,6 +117,19 @@ func (a *App) JSON() ([]byte, error) {
 		data["resourceDefinitions"] = resourceDefs
 	}
 
+	// Add datasource definitions if any
+	if len(a.datasourceDefs) > 0 {
+		datasourceDefs := make(map[string]json.RawMessage)
+		for id, dd := range a.datasourceDefs {
+			ddJSON, err := dd.JSON()
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal datasource definition %s: %w", id, err)
+			}
+			datasourceDefs[id] = ddJSON
+		}
+		data["datasourceDefinitions"] = datasourceDefs
+	}
+	
 	return json.Marshal(data)
 }
 
@@ -108,3 +143,15 @@ func (a *App) GetResourceDefinition(resourceID string) (*resource.Definition, bo
 	}
 	return nil, false
 }
+
+// GetDataSourceDefinition returns the datasource definition with the given ID.
+// The ID is expected to be the UniqueID of the datasource definition.
+func (a *App) GetDataSourceDefinition(datasourceID string) (*datasource.Definition, bool) {
+	for _, dd := range a.DataSourceDefinitions() {
+		if dd.UniqueID() == datasourceID {
+			return dd, true
+		}
+	}
+	return nil, false
+}
+

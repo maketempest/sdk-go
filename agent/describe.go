@@ -95,6 +95,7 @@ func (a *agent) buildDescribeResponse() describeResponse {
 		routes := make(map[string]string)
 		maps.Copy(routes, appConfig.generateCanonicalRoutes())
 		maps.Copy(routes, appConfig.generateOperationRoutes())
+		maps.Copy(routes, appConfig.generateDataSourceRoutes())
 
 		appDesc := newAppDescription(appConfig, a.logger).withRoutes(routes, a.logger)
 		response.Apps[appName] = appDesc

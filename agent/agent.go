@@ -19,6 +19,7 @@ import (
 
 	"github.com/tempestdx/sdk-go/app"
 	"github.com/tempestdx/sdk-go/credential"
+	"github.com/tempestdx/sdk-go/datasource"
 	"github.com/tempestdx/sdk-go/internal/queue"
 	"github.com/tempestdx/sdk-go/resource"
 )
@@ -273,11 +274,13 @@ func (a *agent) RegisterApp(app *app.App) {
 	// Generate routes and canonical bindings
 	canonicalRoutes := appConfig.generateCanonicalRoutes()
 	operationRoutes := appConfig.generateOperationRoutes()
+	dataSourceRoutes := appConfig.generateDataSourceRoutes()
 
 	a.logger.Debug("Generated routes",
 		"app_name", app.Name,
 		"operation_routes", len(operationRoutes),
-		"canonical_routes", len(canonicalRoutes))
+		"canonical_routes", len(canonicalRoutes),
+		"datasource_routes", len(dataSourceRoutes))
 
 	// Register HTTP handlers for operation routes with /operations/ prefix
 	for path := range operationRoutes {
@@ -315,6 +318,24 @@ func (a *agent) RegisterApp(app *app.App) {
 
 		// Create and register the canonical handler
 		a.registerHandler("canonical", appName, version, resourceID, canonicalTypeStr)
+	}
+
+	// Register HTTP handlers for datasource routes
+	for path := range dataSourceRoutes {
+		// Parse elements from path
+		// Expected format: appName/version/datasources/datasourceID
+		parts := strings.Split(path, "/")
+		if len(parts) != 4 || parts[2] != "datasources" {
+			a.logger.Warn("Invalid datasource path format", "path", path)
+			continue // Invalid path format
+		}
+
+		appName := parts[0]
+		version := parts[1]
+		datasourceID := parts[3]
+
+		// Create and register the datasource handler
+		a.registerDatasourceHandler(appName, version, datasourceID)
 	}
 
 	a.logger.Info("App registration complete", "app_name", app.Name)
@@ -1145,6 +1166,17 @@ func (ac *appConfig) generateOperationRoutes() map[string]string {
 	return routes
 }
 
+func (ac *appConfig) generateDataSourceRoutes() map[string]string {
+	routes := make(map[string]string)
+
+	for _, ds := range ac.DataSourceDefinitions() {
+		routes[fmt.Sprintf("%s/%s/datasources/%s", ac.Name, ac.Version, ds.UniqueID())] =
+			fmt.Sprintf("/%s/%s", ac.Name, ds.UniqueID())
+	}
+
+	return routes
+}
+
 // shutdown is the main function for graceful agent shutdown
 func (a *agent) shutdown() {
 	a.logger.Info("Shutting down agent")
@@ -1723,4 +1755,148 @@ func (a *agent) connectApp(appConfig *appConfig) error {
 	}
 
 	return nil
+}
+
+// registerDatasourceHandler registers an HTTP handler for datasource endpoints
+func (a *agent) registerDatasourceHandler(appName, version, datasourceID string) {
+	path := fmt.Sprintf("/%s/%s/datasources/%s", appName, version, datasourceID)
+
+	a.logger.Debug("Registering datasource handler",
+		"path", path,
+		"app", appName,
+		"version", version,
+		"datasource", datasourceID)
+
+	// Create datasource handler
+	handler := &datasourceHandler{
+		agent:        a,
+		appName:      appName,
+		version:      version,
+		datasourceID: datasourceID,
+	}
+
+	a.mux.Handle(path, handler)
+	a.routes[path] = handler
+}
+
+// datasourceHandler handles datasource requests
+type datasourceHandler struct {
+	agent        *agent
+	appName      string
+	version      string
+	datasourceID string
+}
+
+// ServeHTTP handles datasource requests via POST
+func (h *datasourceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Only allow POST requests
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Start execution time tracking
+	startTime := time.Now()
+
+	h.agent.logger.Debug("Handling datasource request",
+		"path", r.URL.Path,
+		"method", r.Method,
+		"remote_addr", r.RemoteAddr)
+
+	// Parse parameters from the JSON body
+	params := make(map[string]any)
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		h.agent.logger.Error("Failed to parse request body", "error", err)
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	// If there's a "params" key, use its value
+	if paramsRaw, ok := body["params"]; ok {
+		if paramsMap, ok := paramsRaw.(map[string]any); ok {
+			params = paramsMap
+		}
+	} else {
+		params = make(map[string]any)
+	}
+
+	// Just log with the datasource ID, no task ID
+	requestLogger := h.agent.logger.With("datasource", h.datasourceID)
+	requestLogger.Info("Processing datasource request")
+
+	// Find app config
+	appConfig, ok := h.agent.apps[h.appName]
+	if !ok {
+		errMsg := fmt.Sprintf("app %s not found", h.appName)
+		requestLogger.Error("App not found", "app_name", h.appName)
+		http.Error(w, errMsg, http.StatusNotFound)
+		return
+	}
+
+	// Find datasource definition
+	datasourceDef, ok := appConfig.GetDataSourceDefinition(h.datasourceID)
+	if !ok {
+		errMsg := fmt.Sprintf("datasource %s not found", h.datasourceID)
+		requestLogger.Error("Datasource not found", "datasource_id", h.datasourceID)
+		http.Error(w, errMsg, http.StatusNotFound)
+		return
+	}
+
+	// Create GetRequest object
+	getReq := &datasource.WebhookRequest{
+		Params: params,
+	}
+
+	// Add credentials from request if available
+	if credsRaw, ok := body["Credentials"]; ok {
+		if credsMap, ok := credsRaw.(map[string]any); ok {
+			getReq.Credentials = credsMap
+		}
+	} else if credsRaw, ok := body["credentials"]; ok {
+		if credsMap, ok := credsRaw.(map[string]any); ok {
+			getReq.Credentials = credsMap
+		}
+	}
+
+	// Execute datasource handler
+	requestLogger.Debug("Executing datasource handler")
+	getFunc := datasourceDef.GetFunc()
+	resp, err := getFunc(r.Context(), getReq)
+ 
+	// End execution time tracking
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+
+	if err != nil {
+		// Request failed
+		requestLogger.Error("Datasource request failed",
+			"error", err.Error(),
+			"duration_ms", duration.Milliseconds())
+
+		http.Error(w, fmt.Sprintf("datasource request failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Handle errors from the response itself
+	if resp.Error != nil {
+		requestLogger.Error("Datasource returned error",
+			"error", resp.Error.Error(),
+			"duration_ms", duration.Milliseconds())
+
+		http.Error(w, fmt.Sprintf("datasource error: %v", resp.Error), http.StatusInternalServerError)
+		return
+	}
+
+	requestLogger.Info("Datasource request completed successfully",
+		"duration_ms", duration.Milliseconds())
+
+	// Return success response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		requestLogger.Error("Failed to encode response", "error", err)
+		http.Error(w, fmt.Sprintf("error encoding response: %v", err), http.StatusInternalServerError)
+		return
+	}
 }

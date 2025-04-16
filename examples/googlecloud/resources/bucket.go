@@ -60,7 +60,7 @@ func bucketHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, erro
 }
 
 func createBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
 
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
@@ -108,7 +108,7 @@ func createBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 }
 
 func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
@@ -154,7 +154,7 @@ func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource
 }
 
 func readBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
@@ -185,7 +185,7 @@ func deleteBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 		return nil, fmt.Errorf("resource is nil")
 	}
 
-	opt, err := getAuthOption(req.Credentials[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}

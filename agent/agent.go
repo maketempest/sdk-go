@@ -1804,23 +1804,13 @@ func (h *datasourceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"remote_addr", r.RemoteAddr)
 
 	// Parse parameters from the JSON body
-	params := make(map[string]any)
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	webhookRequest := &datasource.WebhookRequest{}
+	if err := json.NewDecoder(r.Body).Decode(webhookRequest); err != nil {
 		h.agent.logger.Error("Failed to parse request body", "error", err)
 		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
-
-	// If there's a "params" key, use its value
-	if paramsRaw, ok := body["params"]; ok {
-		if paramsMap, ok := paramsRaw.(map[string]any); ok {
-			params = paramsMap
-		}
-	} else {
-		params = make(map[string]any)
-	}
 
 	// Just log with the datasource ID, no task ID
 	requestLogger := h.agent.logger.With("datasource", h.datasourceID)
@@ -1844,27 +1834,11 @@ func (h *datasourceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create GetRequest object
-	getReq := &datasource.WebhookRequest{
-		Params: params,
-	}
-
-	// Add credentials from request if available
-	if credsRaw, ok := body["Credentials"]; ok {
-		if credsMap, ok := credsRaw.(map[string]any); ok {
-			getReq.Credentials = credsMap
-		}
-	} else if credsRaw, ok := body["credentials"]; ok {
-		if credsMap, ok := credsRaw.(map[string]any); ok {
-			getReq.Credentials = credsMap
-		}
-	}
-
 	// Execute datasource handler
 	requestLogger.Debug("Executing datasource handler")
 	getFunc := datasourceDef.GetFunc()
-	resp, err := getFunc(r.Context(), getReq)
- 
+	resp, err := getFunc(r.Context(), webhookRequest)
+
 	// End execution time tracking
 	endTime := time.Now()
 	duration := endTime.Sub(startTime)

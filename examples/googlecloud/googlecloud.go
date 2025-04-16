@@ -11,6 +11,7 @@ import (
 	"github.com/tempestdx/sdk-go/agent"
 	"github.com/tempestdx/sdk-go/app"
 	credentials "github.com/tempestdx/sdk-go/examples/googlecloud/credentials"
+	datasources "github.com/tempestdx/sdk-go/examples/googlecloud/datasources"
 	resources "github.com/tempestdx/sdk-go/examples/googlecloud/resources"
 )
 
@@ -21,12 +22,19 @@ func main() {
 		panic(err)
 	}
 
+	// Create the greeting datasource definition. Hello World, just for PoC purposes
+	greetingDef, err := datasources.NewGreetingDefinition()
+	if err != nil {
+		panic(err)
+	}
+
 	// Create the Google Cloud app
 	googleCloudApp, err := app.New(
 		app.Config{
 			Name: "google-cloud",
 		},
 		app.WithResource(bucketDef),
+		app.WithDataSource(greetingDef),
 	)
 	if err != nil {
 		panic(err)
@@ -53,8 +61,9 @@ func main() {
 	}
 
 	// Register the Google Cloud app with the agent
-	agentInstance.RegisterApp(googleCloudApp)
 	agentInstance.RegisterCredentials(serviceAccountCredentialProvider)
+	agentInstance.RegisterApp(googleCloudApp)
+
 
 	fmt.Println("Starting Google Cloud agent on port 8080...")
 	if err := agentInstance.Run(); err != nil {

@@ -15,8 +15,8 @@ import (
 // For simplicity in this example, we're using hardcoded values
 // In a real implementation, these would be properly managed
 var (
-	projectID          = "tempest-sandbox"
-	saApikeyKey        = "google-cloud-storage-api-key"
+	projectID   = "tempest-sandbox"
+	saApikeyKey = "google-cloud-storage-api-key"
 )
 
 func bucketToResource(bucket *storage.BucketAttrs) *resource.Resource {
@@ -35,11 +35,11 @@ func bucketToResource(bucket *storage.BucketAttrs) *resource.Resource {
 			},
 		},
 		Properties: map[string]any{
-			"created":            bucket.Created,
-			"updated":            bucket.Updated,
-			"location":           bucket.Location,
-			"storageClass":       bucket.StorageClass,
-			"versioningEnabled":  bucket.VersioningEnabled,
+			"created":           bucket.Created,
+			"updated":           bucket.Updated,
+			"location":          bucket.Location,
+			"storageClass":      bucket.StorageClass,
+			"versioningEnabled": bucket.VersioningEnabled,
 		},
 	}
 }
@@ -60,7 +60,7 @@ func bucketHealthCheck(ctx context.Context) (*resource.HealthCheckResponse, erro
 }
 
 func createBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey])
 
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
@@ -108,7 +108,7 @@ func createBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 }
 
 func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey])
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
@@ -154,7 +154,7 @@ func listBuckets(ctx context.Context, req *resource.OperationRequest) (*resource
 }
 
 func readBucket(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey])
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}
@@ -185,7 +185,7 @@ func deleteBucket(ctx context.Context, req *resource.OperationRequest) (*resourc
 		return nil, fmt.Errorf("resource is nil")
 	}
 
-	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey].(string))
+	opt, err := getAuthOption(req.Credentials.Values[saApikeyKey])
 	if err != nil {
 		return nil, fmt.Errorf("create auth option: %w", err)
 	}

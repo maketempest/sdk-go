@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/tempestdx/sdk-go/credential"
 	"github.com/tempestdx/sdk-go/jsonschema"
 )
 
@@ -23,16 +24,16 @@ type Definition struct {
 	instructionsMarkdown string
 	// The function that will be called to get data
 	getFunc GetFunc
-	// Credentials required by this datasource
-	credentials []string
+	// Names of credential providers required by this datasource
+	credentialProviders []string
 }
 
 // WebhookRequest contains the input parameters for a datasource webhook
 type WebhookRequest struct {
 	// Input contains the input data for the request, validated against the schema
-	Params map[string]any `json:"params,omitempty"`
+	Args map[string]any `json:"args,omitempty"`
 	// Credentials contains the credentials for the webhook
-	Credentials map[string]any `json:"credentials,omitempty"`
+	Credentials *credential.Credential `json:"credentials,omitempty"`
 }
 
 // WebhookResponse contains the output data from a datasource
@@ -122,7 +123,7 @@ func WithGetFunc(fn GetFunc) Option {
 // WithCredentials sets the credentials required by this datasource
 func WithCredentials(creds ...string) Option {
 	return func(d *Definition) {
-		d.credentials = creds
+		d.credentialProviders = creds
 	}
 }
 
@@ -157,8 +158,8 @@ func (d *Definition) GetFunc() GetFunc {
 }
 
 // Credentials returns the credentials required by this datasource
-func (d *Definition) Credentials() []string {
-	return d.credentials
+func (d *Definition) CredentialProviders() []string {
+	return d.credentialProviders
 }
 
 // JSON returns the JSON representation of the datasource definition
@@ -192,8 +193,8 @@ func (d *Definition) JSON() ([]byte, error) {
 	}
 
 	// Add credentials if any
-	if len(d.credentials) > 0 {
-		data["credentials"] = d.credentials
+	if len(d.credentialProviders) > 0 {
+		data["credentialProviders"] = d.credentialProviders
 	}
 
 	return json.Marshal(data)

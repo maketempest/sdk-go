@@ -10,10 +10,11 @@ import (
 )
 
 type App struct {
-	Name         string
-	resourceDefs map[string]*resource.Definition
+	Name           string
+	resourceDefs   map[string]*resource.Definition
 	datasourceDefs map[string]*datasource.Definition
-	credentials  []string
+	// Names of credential providers supported by this app
+	credentialProviders []string
 }
 
 func (a *App) ResourceDefinitions() map[string]*resource.Definition {
@@ -38,8 +39,8 @@ type Config struct {
 
 func New(config Config, opts ...OptFunc) (*App, error) {
 	a := &App{
-		Name:         config.Name,
-		resourceDefs: make(map[string]*resource.Definition),
+		Name:           config.Name,
+		resourceDefs:   make(map[string]*resource.Definition),
 		datasourceDefs: make(map[string]*datasource.Definition),
 	}
 
@@ -82,13 +83,13 @@ func WithDataSource(d *datasource.Definition) OptFunc {
 
 func WithCredentials(credentials []string) OptFunc {
 	return func(a *App) error {
-		a.credentials = credentials
+		a.credentialProviders = credentials
 		return nil
 	}
 }
 
-func (a *App) Credentials() []string {
-	return a.credentials
+func (a *App) CredentialProviders() []string {
+	return a.credentialProviders
 }
 
 func (a *App) Resources() map[string]*resource.Definition {
@@ -129,7 +130,7 @@ func (a *App) JSON() ([]byte, error) {
 		}
 		data["datasourceDefinitions"] = datasourceDefs
 	}
-	
+
 	return json.Marshal(data)
 }
 
@@ -154,4 +155,3 @@ func (a *App) GetDataSourceDefinition(datasourceID string) (*datasource.Definiti
 	}
 	return nil, false
 }
-

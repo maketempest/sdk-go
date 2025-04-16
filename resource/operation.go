@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/tempestdx/sdk-go/credential"
 	"github.com/tempestdx/sdk-go/jsonschema"
 )
 
@@ -41,9 +42,9 @@ type OperationRequest struct {
 	Environment map[string]EnvironmentVariable `json:"environment,omitempty"`
 	// Pagination contains pagination parameters for list operations
 	Pagination *PaginationRequest `json:"pagination,omitempty"`
-	// Credentials contains the credentials for the operation. 
+	// Credentials contains the credentials for the operation.
 	// TODO: consider moving it to the context
-	Credentials *Credential `json:"credentials,omitempty"`
+	Credentials *credential.Credential `json:"credentials,omitempty"`
 }
 
 // OperationResponse contains the output data for an operation on a resource.
@@ -54,11 +55,6 @@ type OperationResponse struct {
 	Error error `json:"error,omitempty"`
 	// Message is the message of the operation.
 	Message string `json:"message,omitempty"`
-}
-
-type Credential struct {
-	Type   string         `json:"type"`
-	Values map[string]any `json:"values"`
 }
 
 // NewSingleResourceResponse creates an operation response for a single resource.

@@ -15,3 +15,8 @@ const (
 	// CredentialTypeAPIKey represents an API key credential
 	CredentialTypeAPIKey CredentialType = "api_key"
 )
+
+type Credential struct {
+	Type   CredentialType    `json:"type"`
+	Values map[string]string `json:"values"`
+}

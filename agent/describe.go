@@ -50,13 +50,13 @@ type ResourceDescription struct {
 
 // AppDescription represents an app in the describe API response
 type AppDescription struct {
-	Name              string                           `json:"name"`
-	Version           string                           `json:"version"`
-	Resources         map[string]ResourceDescription   `json:"resources"`
-	Datasources       map[string]DataSourceDescription `json:"datasources"`
-	Credentials       []string                         `json:"credentials,omitempty"`
-	CanonicalBindings json.RawMessage                  `json:"canonicalBindings,omitempty"`
-	Routes            json.RawMessage                  `json:"routes,omitempty"`
+	Name                string                           `json:"name"`
+	Version             string                           `json:"version"`
+	Resources           map[string]ResourceDescription   `json:"resources"`
+	Datasources         map[string]DataSourceDescription `json:"datasources"`
+	CredentialProviders []string                         `json:"credentialProviders,omitempty"`
+	CanonicalBindings   json.RawMessage                  `json:"canonicalBindings,omitempty"`
+	Routes              json.RawMessage                  `json:"routes,omitempty"`
 }
 
 type describeResponse struct {
@@ -138,8 +138,8 @@ func newAppDescription(appConfig *appConfig, logger *slog.Logger) AppDescription
 		appDesc = appDesc.withVersion(appConfig.Version)
 	}
 
-	if len(appConfig.Credentials()) > 0 {
-		appDesc.Credentials = appConfig.Credentials()
+	if len(appConfig.CredentialProviders()) > 0 {
+		appDesc.CredentialProviders = appConfig.CredentialProviders()
 	}
 
 	for _, resourceDef := range appConfig.ResourceDefinitions() {

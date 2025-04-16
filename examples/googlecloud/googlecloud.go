@@ -22,8 +22,8 @@ func main() {
 		panic(err)
 	}
 
-	// Create the greeting datasource definition. Hello World, just for PoC purposes
-	greetingDef, err := datasources.NewGreetingDefinition()
+	// Create the GCP Projects datasource definition
+	projectsDef, err := datasources.NewProjectsDefinition()
 	if err != nil {
 		panic(err)
 	}
@@ -34,7 +34,7 @@ func main() {
 			Name: "google-cloud",
 		},
 		app.WithResource(bucketDef),
-		app.WithDataSource(greetingDef),
+		app.WithDataSource(projectsDef),
 	)
 	if err != nil {
 		panic(err)
@@ -45,7 +45,7 @@ func main() {
 	// Create and configure the agent
 	agentInstance, err := agent.New(
 		agent.WithServerAddr(":8080"),
-		agent.WithAPIKey("tempest-api-key"),
+		agent.WithAPIKey("TEMPEST_API_KEY"),
 		agent.WithAPIURL("http://localhost:8040"),
 		agent.WithWorkers(1),
 		agent.WithResultWorkers(1),
@@ -63,7 +63,6 @@ func main() {
 	// Register the Google Cloud app with the agent
 	agentInstance.RegisterCredentials(serviceAccountCredentialProvider)
 	agentInstance.RegisterApp(googleCloudApp)
-
 
 	fmt.Println("Starting Google Cloud agent on port 8080...")
 	if err := agentInstance.Run(); err != nil {

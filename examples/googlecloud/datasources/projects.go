@@ -3,6 +3,7 @@ package datasources
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 
 	"github.com/tempestdx/sdk-go/datasource"
@@ -25,34 +26,8 @@ const (
 	"type": "object",
 	"properties": {
 		"projects": {
-			"title": "Projects",
-			"description": "List of Google Cloud projects",
-			"type": "array",
-			"items": {
-				"type": "object",
-				"properties": {
-					"id": {
-						"type": "string",
-						"description": "Project ID"
-					},
-					"name": {
-						"type": "string",
-						"description": "Project name"
-					},
-					"displayName": {
-						"type": "string",
-						"description": "Project display name"
-					},
-					"createTime": {
-						"type": "string",
-						"description": "Project creation time"
-					},
-					"state": {
-						"type": "string",
-						"description": "Project lifecycle state"
-					}
-				}
-			}
+			"type": "string",
+			"description": "JSON string representing Google Cloud projects indexed by project ID"
 		}
 	},
 	"additionalProperties": false
@@ -148,20 +123,29 @@ func getProjects(ctx context.Context, req *datasource.WebhookRequest) (*datasour
 	}
 
 	// Process the response
-	projects := make([]map[string]any, 0, len(resp.Projects))
+	projects := make(map[string]map[string]any)
 	for _, project := range resp.Projects {
-		projects = append(projects, map[string]any{
+		projects[project.ProjectId] = map[string]any{
 			"id":          project.ProjectId,
 			"name":        project.Name,
 			"displayName": project.DisplayName,
 			"createTime":  project.CreateTime,
 			"state":       project.State,
-		})
+		}
+	}
+
+	// Marshal projects map to JSON string
+	projectsJSON, err := json.Marshal(projects)
+	if err != nil {
+		return &datasource.WebhookResponse{
+			Error:   fmt.Errorf("failed to marshal projects to JSON: %w", err),
+			Message: "Error processing project data",
+		}, nil
 	}
 
 	return &datasource.WebhookResponse{
 		Data: map[string]any{
-			"projects": projects,
+			"projects": string(projectsJSON),
 		},
 	}, nil
 }

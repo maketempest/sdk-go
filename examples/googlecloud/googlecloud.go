@@ -45,7 +45,7 @@ func main() {
 	// Create and configure the agent
 	agentInstance, err := agent.New(
 		agent.WithServerAddr(":8080"),
-		agent.WithAPIKey("TEMPEST_API_KEY"),
+		agent.WithAPIKey("tempest-api-key"),
 		agent.WithAPIURL("http://localhost:8040"),
 		agent.WithWorkers(1),
 		agent.WithResultWorkers(1),

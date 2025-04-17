@@ -16,7 +16,7 @@ import (
 // In a real implementation, these would be properly managed
 var (
 	projectID   = "tempest-sandbox"
-	saApikeyKey = "google-cloud-storage-api-key"
+	saApikeyKey = "service_account"
 )
 
 func bucketToResource(bucket *storage.BucketAttrs) *resource.Resource {

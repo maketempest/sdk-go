@@ -8,7 +8,7 @@ import (
 
 	"github.com/tempestdx/sdk-go/datasource"
 	"github.com/tempestdx/sdk-go/jsonschema"
-	resourcemanager "google.golang.org/api/cloudresourcemanager/v3"
+	resourcemanager "google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/option"
 )
 
@@ -107,14 +107,10 @@ func getProjects(ctx context.Context, req *datasource.WebhookRequest) (*datasour
 			Message: "Failed to initialize Google Cloud Resource Manager service",
 		}, nil
 	}
-
-	// Create the projects service
-	projectsService := resourcemanager.NewProjectsService(service)
-
 	// List the projects
-	listCall := projectsService.List()
+	listCall := service.Projects.List()
 
-	resp, err := listCall.Do()
+	resp, err := listCall.Context(ctx).Do()
 	if err != nil {
 		return &datasource.WebhookResponse{
 			Error:   fmt.Errorf("failed to list projects: %w", err),
@@ -126,11 +122,8 @@ func getProjects(ctx context.Context, req *datasource.WebhookRequest) (*datasour
 	projects := make(map[string]map[string]any)
 	for _, project := range resp.Projects {
 		projects[project.ProjectId] = map[string]any{
-			"id":          project.ProjectId,
-			"name":        project.Name,
-			"displayName": project.DisplayName,
-			"createTime":  project.CreateTime,
-			"state":       project.State,
+			"id":   project.ProjectId,
+			"name": project.Name,
 		}
 	}
 

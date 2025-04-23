@@ -17,6 +17,6 @@ const (
 )
 
 type Credential struct {
-	Type   CredentialType    `json:"type"`
-	Values map[string]string `json:"values"`
+	CredentialProvider string            `json:"credentialProvider"`
+	Values             map[string]string `json:"values"`
 }

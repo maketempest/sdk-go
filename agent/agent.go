@@ -254,7 +254,7 @@ func (a *agent) RegisterCredentials(credentials *credential.CredentialProvider) 
 }
 
 // RegisterApp registers an app with the agent and sets up its HTTP routes
-func (a *agent) RegisterApp(app *app.App) {
+func (a *agent) RegisterApp(app *app.App) error {
 	a.logger.Info("Registering app", "app_name", app.Name)
 
 	appConfig := &appConfig{
@@ -267,7 +267,7 @@ func (a *agent) RegisterApp(app *app.App) {
 	err := a.connectApp(appConfig)
 	if err != nil {
 		a.logger.Error("Failed to connect app", "app", app.Name, "error", err)
-		return
+		return err
 	}
 	a.apps[app.Name] = appConfig
 
@@ -339,6 +339,7 @@ func (a *agent) RegisterApp(app *app.App) {
 	}
 
 	a.logger.Info("App registration complete", "app_name", app.Name)
+	return nil
 }
 
 // Run starts the agent and blocks until it receives a termination signal

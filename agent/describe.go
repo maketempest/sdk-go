@@ -50,13 +50,14 @@ type ResourceDescription struct {
 
 // AppDescription represents an app in the describe API response
 type AppDescription struct {
-	Name                string                           `json:"name"`
-	Version             string                           `json:"version"`
-	Resources           map[string]ResourceDescription   `json:"resources"`
-	Datasources         map[string]DataSourceDescription `json:"datasources"`
-	CredentialProviders []string                         `json:"credentialProviders,omitempty"`
-	CanonicalBindings   json.RawMessage                  `json:"canonicalBindings,omitempty"`
-	Routes              json.RawMessage                  `json:"routes,omitempty"`
+	Name                  string                           `json:"name"`
+	Version               string                           `json:"version"`
+	Resources             map[string]ResourceDescription   `json:"resources"`
+	Datasources           map[string]DataSourceDescription `json:"datasources"`
+	CredentialProviders   []string                         `json:"credentialProviders,omitempty"`
+	CanonicalBindings     json.RawMessage                  `json:"canonicalBindings,omitempty"`
+	Routes                json.RawMessage                  `json:"routes,omitempty"`
+	ImplementedInterfaces []string                         `json:"implementedInterfaces,omitempty"`
 }
 
 type describeResponse struct {
@@ -140,6 +141,15 @@ func newAppDescription(appConfig *appConfig, logger *slog.Logger) AppDescription
 
 	if len(appConfig.CredentialProviders()) > 0 {
 		appDesc.CredentialProviders = appConfig.CredentialProviders()
+	}
+
+	// Populate implemented interfaces
+	if len(appConfig.ImplementedInterfaces()) > 0 {
+		interfaceStrings := make([]string, len(appConfig.ImplementedInterfaces()))
+		for i, iface := range appConfig.ImplementedInterfaces() {
+			interfaceStrings[i] = string(iface)
+		}
+		appDesc.ImplementedInterfaces = interfaceStrings
 	}
 
 	for _, resourceDef := range appConfig.ResourceDefinitions() {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/tempestdx/sdk-go/datasource"
 	"github.com/tempestdx/sdk-go/resource"
@@ -15,6 +16,8 @@ type App struct {
 	datasourceDefs map[string]*datasource.Definition
 	// Names of credential providers supported by this app
 	credentialProviders []string
+	// List of implemented plug and play interfaces
+	implementedInterfaces []InterfaceType
 }
 
 func (a *App) ResourceDefinitions() map[string]*resource.Definition {
@@ -88,6 +91,19 @@ func WithCredentials(credentials []string) OptFunc {
 	}
 }
 
+func WithInterface(iface InterfaceType) OptFunc {
+	return func(a *App) error {
+		if !iface.IsValid() {
+			return fmt.Errorf("invalid interface type: %s", iface)
+		}
+		if slices.Contains(a.implementedInterfaces, iface) {
+			return nil // Already added
+		}
+		a.implementedInterfaces = append(a.implementedInterfaces, iface)
+		return nil
+	}
+}
+
 func (a *App) CredentialProviders() []string {
 	return a.credentialProviders
 }
@@ -97,6 +113,13 @@ func (a *App) Resources() map[string]*resource.Definition {
 	resourcesCopy := make(map[string]*resource.Definition, len(a.resourceDefs))
 	maps.Copy(resourcesCopy, a.resourceDefs)
 	return resourcesCopy
+}
+
+// ImplementedInterfaces returns a copy of the implemented plug and play interfaces.
+func (a *App) ImplementedInterfaces() []InterfaceType {
+	interfacesCopy := make([]InterfaceType, len(a.implementedInterfaces))
+	copy(interfacesCopy, a.implementedInterfaces)
+	return interfacesCopy
 }
 
 // JSON returns the JSON representation of the App
@@ -129,6 +152,16 @@ func (a *App) JSON() ([]byte, error) {
 			datasourceDefs[id] = ddJSON
 		}
 		data["datasourceDefinitions"] = datasourceDefs
+	}
+
+	// Add implemented interfaces if any
+	if len(a.implementedInterfaces) > 0 {
+		// Convert InterfaceType slice to string slice for JSON
+		interfaceStrings := make([]string, len(a.implementedInterfaces))
+		for i, iface := range a.implementedInterfaces {
+			interfaceStrings[i] = string(iface)
+		}
+		data["implementedInterfaces"] = interfaceStrings
 	}
 
 	return json.Marshal(data)

@@ -1,9 +1,12 @@
 package app
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"maps"
+	"maps"          // Keep for now? No, not needed anymore
+	"os"            // Import os for ReadFile
+	"path/filepath" // Import filepath for Base
 	"slices"
 
 	"github.com/tempestdx/sdk-go/datasource"
@@ -11,7 +14,10 @@ import (
 )
 
 type App struct {
+	ID             string
 	Name           string
+	Icon           []byte
+	IconFilename   string
 	resourceDefs   map[string]*resource.Definition
 	datasourceDefs map[string]*datasource.Definition
 	// Names of credential providers supported by this app
@@ -37,12 +43,15 @@ func (a *App) DataSourceDefinitions() map[string]*datasource.Definition {
 type OptFunc func(*App) error
 
 type Config struct {
+	ID   string
 	Name string
 }
 
 func New(config Config, opts ...OptFunc) (*App, error) {
 	a := &App{
-		Name:           config.Name,
+		ID:   config.ID,
+		Name: config.Name,
+		// Icon and IconFilename are set via options now
 		resourceDefs:   make(map[string]*resource.Definition),
 		datasourceDefs: make(map[string]*datasource.Definition),
 	}
@@ -53,8 +62,11 @@ func New(config Config, opts ...OptFunc) (*App, error) {
 		}
 	}
 
+	if a.ID == "" {
+		return nil, fmt.Errorf("app ID is required")
+	}
 	if a.Name == "" {
-		return nil, fmt.Errorf("app name is required")
+		return nil, fmt.Errorf("app Name is required")
 	}
 
 	return a, nil
@@ -80,6 +92,38 @@ func WithDataSource(d *datasource.Definition) OptFunc {
 		}
 		a.datasourceDefs[d.UniqueID()] = d
 
+		return nil
+	}
+}
+
+// WithIcon sets the application's icon by reading the file at the given path.
+// It stores the file content as bytes and extracts the base filename.
+func WithIcon(filePath string) OptFunc {
+	return func(a *App) error {
+		if filePath == "" {
+			a.Icon = nil
+			a.IconFilename = ""
+			return nil // No path provided or clearing existing icon
+		}
+
+		iconData, err := os.ReadFile(filePath)
+		if err != nil {
+			// Return an error that wraps the original file reading error
+			return fmt.Errorf("failed to read icon file '%s': %w", filePath, err)
+		}
+
+		if len(iconData) == 0 {
+			// Handle case of empty file? Clear or return error?
+			// Let's clear, maybe an empty file means no icon.
+			a.Icon = nil
+			a.IconFilename = ""
+			return nil
+		}
+
+		filename := filepath.Base(filePath)
+
+		a.Icon = iconData
+		a.IconFilename = filename
 		return nil
 	}
 }
@@ -125,7 +169,14 @@ func (a *App) ImplementedInterfaces() []InterfaceType {
 // JSON returns the JSON representation of the App
 func (a *App) JSON() ([]byte, error) {
 	data := map[string]any{
+		"id":   a.ID,
 		"name": a.Name,
+	}
+
+	// Add icon and filename if icon data exists
+	if len(a.Icon) > 0 {
+		data["icon"] = base64.StdEncoding.EncodeToString(a.Icon)
+		data["iconFilename"] = a.IconFilename
 	}
 
 	// Add resource definitions if any

@@ -31,8 +31,10 @@ func main() {
 	// Create the Google Cloud app
 	googleCloudApp, err := app.New(
 		app.Config{
-			Name: "google-cloud",
+			ID:   "google-cloud",
+			Name: "Google Cloud",
 		},
+		app.WithIcon("examples/googlecloud/logo.svg"),
 		app.WithResource(bucketDef),
 		app.WithDataSource(projectsDef),
 	)

@@ -10,8 +10,9 @@ import (
 
 // Hardcoded data for demonstration
 var exampleRepo = map[string]any{
-	"name": "example-repo",
-	"url":  "https://github.com/example/example-repo",
+	"externalId": "example-repo-123",
+	"name":       "example-repo",
+	"url":        "https://github.com/example/example-repo",
 }
 
 func repositoryToResource(id string, props map[string]any) *resource.Resource {
@@ -41,37 +42,54 @@ func createRepository(ctx context.Context, req *resource.OperationRequest) (*res
 	name := req.Args["name"].(string)
 	newRepoID := fmt.Sprintf("%s-123", name)
 	newRepoProps := map[string]any{
-		"name": name,
-		"url":  fmt.Sprintf("https://github.com/example/%s", name),
+		"externalId": newRepoID,
+		"name":       name,
+		"url":        fmt.Sprintf("https://github.com/example/%s", name),
 	}
 	return resource.NewSingleResourceResponse(repositoryToResource(newRepoID, newRepoProps), fmt.Sprintf("Created repository %s", name), nil), nil
 }
 
 func listRepositories(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
 	items := []*resource.Resource{
-		repositoryToResource("example-repo-123", exampleRepo),
+		repositoryToResource(exampleRepo["externalId"].(string), exampleRepo),
 	}
 	return resource.NewResourceListResponse(items, len(items), 10, "", fmt.Sprintf("Found %d repositories", len(items)), nil), nil
 }
 
 func readRepository(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	if req.Resource == nil || req.Resource.ExternalID == "" {
-		return nil, fmt.Errorf("resource ID is missing")
+	externalId, ok := req.Args["externalId"].(string)
+	if !ok || externalId == "" {
+		return nil, fmt.Errorf("externalId is required")
 	}
-	return resource.NewSingleResourceResponse(repositoryToResource(req.Resource.ExternalID, exampleRepo), fmt.Sprintf("Found repository %s", req.Resource.ExternalID), nil), nil
+
+	// Clone the example repo and set the proper ID
+	repoData := make(map[string]any)
+	for k, v := range exampleRepo {
+		repoData[k] = v
+	}
+	repoData["externalId"] = externalId
+
+	return resource.NewSingleResourceResponse(
+		repositoryToResource(externalId, repoData),
+		fmt.Sprintf("Found repository %s", externalId),
+		nil,
+	), nil
 }
 
 func deleteRepository(ctx context.Context, req *resource.OperationRequest) (*resource.OperationResponse, error) {
-	if req.Resource == nil || req.Resource.ExternalID == "" {
-		return nil, fmt.Errorf("resource ID is missing")
+	externalId, ok := req.Args["externalId"].(string)
+	if !ok || externalId == "" {
+		return nil, fmt.Errorf("externalId is required")
 	}
+
 	return &resource.OperationResponse{
 		Data: &resource.Resource{
 			ResourceRef: resource.ResourceRef{
-				ExternalID: req.Resource.ExternalID,
-				Name:       req.Resource.Name,
+				ExternalID: externalId,
+				Name:       fmt.Sprintf("repo-%s", externalId),
 			},
 		},
+		Message: fmt.Sprintf("Deleted repository %s", externalId),
 	}, nil
 }
 
@@ -114,6 +132,7 @@ func NewRepositoryResource() (*resource.Definition, error) {
 	repoDef.RegisterOperation(
 		"read",
 		readRepository,
+		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(readRepositorySchema))),
 		resource.Op.On(resource.CanonicalOperation{
 			Type:     resource.Read,
 			Priority: 100,
@@ -123,6 +142,7 @@ func NewRepositoryResource() (*resource.Definition, error) {
 	repoDef.RegisterOperation(
 		"delete",
 		deleteRepository,
+		resource.Op.WithArgs(jsonschema.MustParseSchema([]byte(deleteRepositorySchema))),
 		resource.Op.On(resource.CanonicalOperation{
 			Type:     resource.Delete,
 			Priority: 100,

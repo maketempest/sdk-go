@@ -7,17 +7,24 @@ const (
 	"$schema": "https://developer.tempestdx.com/schema/v1/tempest-properties-schema.json",
 	"type": "object",
 	"properties": {
+		"externalId": {
+			"title": "Repository ID",
+			"description": "The unique identifier of the GitHub repository.",
+			"type": "string"
+		},
 		"name": {
 			"title": "Repository Name",
 			"description": "The name of the GitHub repository.",
 			"type": "string"
 		},
 		"url": {
-			"title": "URL",
+			"title": "Repository URL",
 			"description": "The URL of the GitHub repository.",
-			"type": "string"
+			"type": "string",
+			"format": "uri"
 		}
 	},
+	"required": ["externalId", "name", "url"],
 	"additionalProperties": true
 }`
 
@@ -27,12 +34,42 @@ const (
 	"type": "object",
 	"properties": {
 		"name": {
-			"title": "Name",
+			"title": "Repository Name",
 			"description": "The desired name of the repository.",
 			"type": "string"
 		}
 	},
 	"required": ["name"],
+	"additionalProperties": false
+}`
+
+	readRepositorySchema = `
+{
+	"$schema": "https://developer.tempestdx.com/schema/v1/tempest-app-schema.json",
+	"type": "object",
+	"properties": {
+		"externalId": {
+			"title": "Repository ID",
+			"description": "The unique identifier of the GitHub repository.",
+			"type": "string"
+		}
+	},
+	"required": ["externalId"],
+	"additionalProperties": false
+}`
+
+	deleteRepositorySchema = `
+{
+	"$schema": "https://developer.tempestdx.com/schema/v1/tempest-app-schema.json",
+	"type": "object",
+	"properties": {
+		"externalId": {
+			"title": "Repository ID",
+			"description": "The unique identifier of the GitHub repository.",
+			"type": "string"
+		}
+	},
+	"required": ["externalId"],
 	"additionalProperties": false
 }`
 

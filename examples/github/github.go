@@ -18,7 +18,10 @@ func main() {
 		log.Fatalf("Failed to create GitHub repository resource: %v", err)
 	}
 
-	githubApp, err := app.New(app.Config{Name: "github"},
+	githubApp, err := app.New(app.Config{
+		ID:   "github",
+		Name: "GitHub",
+	},
 		app.WithResource(githubRepoResource),
 		app.WithInterface(app.GitRepositoryInterface), // Indicate this app implements the git repository interface
 	)

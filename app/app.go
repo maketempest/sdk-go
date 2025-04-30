@@ -51,7 +51,6 @@ func New(config Config, opts ...OptFunc) (*App, error) {
 	a := &App{
 		ID:   config.ID,
 		Name: config.Name,
-		// Icon and IconFilename are set via options now
 		resourceDefs:   make(map[string]*resource.Definition),
 		datasourceDefs: make(map[string]*datasource.Definition),
 	}

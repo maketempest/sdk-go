@@ -34,7 +34,7 @@ func main() {
 			ID:   "google-cloud",
 			Name: "Google Cloud",
 		},
-		app.WithIcon("examples/googlecloud/logo.svg"),
+		app.WithIcon("logo.svg"),
 		app.WithResource(bucketDef),
 		app.WithDataSource(projectsDef),
 	)
@@ -47,7 +47,6 @@ func main() {
 	// Create and configure the agent
 	agentInstance, err := agent.New(
 		agent.WithServerAddr(":8080"),
-		agent.WithAPIKey("tempest-api-key"),
 		agent.WithAPIURL("http://localhost:8040"),
 		agent.WithWorkers(1),
 		agent.WithResultWorkers(1),

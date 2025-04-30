@@ -269,7 +269,7 @@ func (a *agent) RegisterApp(app *app.App) error {
 		a.logger.Error("Failed to connect app", "app", app.Name, "error", err)
 		return err
 	}
-	a.apps[app.Name] = appConfig
+	a.apps[app.ID] = appConfig
 
 	// Generate routes and canonical bindings
 	canonicalRoutes := appConfig.generateCanonicalRoutes()
@@ -277,7 +277,7 @@ func (a *agent) RegisterApp(app *app.App) error {
 	dataSourceRoutes := appConfig.generateDataSourceRoutes()
 
 	a.logger.Debug("Generated routes",
-		"app_name", app.Name,
+		"app_id", app.ID,
 		"operation_routes", len(operationRoutes),
 		"canonical_routes", len(canonicalRoutes),
 		"datasource_routes", len(dataSourceRoutes))
@@ -1017,8 +1017,8 @@ func (ac *appConfig) generateCanonicalRoutes() map[string]string {
 			typeStr := canonicalType.String()
 			if typeStr != "" {
 				// Remove "canonical/" from the path
-				routes[fmt.Sprintf("%s/%s/%s/%s", ac.Name, ac.Version, r.UniqueID(), typeStr)] =
-					fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
+				routes[fmt.Sprintf("%s/%s/%s/%s", ac.ID, ac.Version, r.UniqueID(), typeStr)] =
+					fmt.Sprintf("/%s/%s", ac.ID, r.UniqueID())
 			}
 		}
 	}
@@ -1159,8 +1159,8 @@ func (ac *appConfig) generateOperationRoutes() map[string]string {
 	for _, r := range ac.ResourceDefinitions() {
 		for _, op := range r.Operations() {
 			// generate a route per operation, resource, and supported version
-			routes[fmt.Sprintf("%s/%s/%s/operations/%s", ac.Name, ac.Version, r.UniqueID(), op.Name())] =
-				fmt.Sprintf("/%s/%s", ac.Name, r.UniqueID())
+			routes[fmt.Sprintf("%s/%s/%s/operations/%s", ac.ID, ac.Version, r.UniqueID(), op.Name())] =
+				fmt.Sprintf("/%s/%s", ac.ID, r.UniqueID())
 		}
 	}
 
@@ -1171,8 +1171,8 @@ func (ac *appConfig) generateDataSourceRoutes() map[string]string {
 	routes := make(map[string]string)
 
 	for _, ds := range ac.DataSourceDefinitions() {
-		routes[fmt.Sprintf("%s/%s/datasources/%s", ac.Name, ac.Version, ds.UniqueID())] =
-			fmt.Sprintf("/%s/%s", ac.Name, ds.UniqueID())
+		routes[fmt.Sprintf("%s/%s/datasources/%s", ac.ID, ac.Version, ds.UniqueID())] =
+			fmt.Sprintf("/%s/%s", ac.ID, ds.UniqueID())
 	}
 
 	return routes
